@@ -51,6 +51,12 @@ Wi-Fi. A clock-wait status identifies SNTP startup; failed connections retain
 numeric TLS, ESP and HTTP error codes through subsequent disconnect events.
 The status includes no credentials or certificate material.
 
+A second long press stops the active recording using its retained task ID,
+including when its card disappears after becoming read, another card is selected,
+or Settings is open. The screen selection is consulted only to start a new
+recording. Stopping closes the capture gate before waiting for network work;
+the Mac then finalizes transcription and opens the original task's draft.
+
 ## Diagnosis
 
 - An unchanged initial "Connecting to the Mac" card means no poll has rendered

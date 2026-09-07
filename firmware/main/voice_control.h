@@ -17,6 +17,8 @@ typedef struct {
 } voice_control_t;
 
 void voice_control_init(voice_control_t *control);
+// Active sessions stop using their retained thread_id, regardless of selection.
+// An idle session requires a nonempty selected thread_id to start.
 voice_control_action_t voice_control_begin_toggle(voice_control_t *control, const char *thread_id);
 voice_control_action_t voice_control_focus_result(
     voice_control_t *control,

@@ -19,16 +19,16 @@ void voice_control_init(voice_control_t *control)
 
 voice_control_action_t voice_control_begin_toggle(voice_control_t *control, const char *thread_id)
 {
-    if (control == NULL || thread_id == NULL || thread_id[0] == '\0') {
-        return VOICE_CONTROL_ACTION_NONE;
-    }
-    const bool same_thread = strcmp(control->thread_id, thread_id) == 0;
-    if (same_thread && (control->state == ATTENTION_VOICE_FOCUSING
+    if (control == NULL) return VOICE_CONTROL_ACTION_NONE;
+    // The second gesture belongs to the active session, even if a refresh
+    // removed its card, Settings is open, or another task is now selected.
+    if (control->thread_id[0] != '\0' && (control->state == ATTENTION_VOICE_FOCUSING
         || control->state == ATTENTION_VOICE_STARTING
         || control->state == ATTENTION_VOICE_LISTENING)) {
         control->state = ATTENTION_VOICE_MUTED;
         return VOICE_CONTROL_ACTION_MUTE;
     }
+    if (thread_id == NULL || thread_id[0] == '\0') return VOICE_CONTROL_ACTION_NONE;
 
     copy_thread_id(control->thread_id, thread_id, sizeof(control->thread_id));
     control->state = ATTENTION_VOICE_FOCUSING;

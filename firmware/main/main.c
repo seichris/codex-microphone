@@ -468,19 +468,21 @@ static void button_task(void *argument)
             }
             else (void)attention_ui_activate_selected();
         } else if (event == BUTTON_INPUT_BOOT_LONG || event == BUTTON_INPUT_PWR_LONG) {
-            char thread_id[ATTENTION_ID_MAX];
-            if (attention_ui_get_voice_target_id(thread_id, sizeof(thread_id))) {
-                const bool wireless_active = wireless_microphone_has_active_session();
-                // Privacy boundary: close the PCM gate before muting this task
-                // or switching Voice to another selected task. The network
-                // stop is deferred until after the display lock is released.
-                voice_audio_set_listening(false);
-                taskENTER_CRITICAL(&s_voice_control_lock);
-                const voice_control_action_t action = voice_control_begin_toggle(
-                    &s_voice_control,
-                    thread_id
-                );
-                taskEXIT_CRITICAL(&s_voice_control_lock);
+            char thread_id[ATTENTION_ID_MAX] = { 0 };
+            (void)attention_ui_get_voice_target_id(thread_id, sizeof(thread_id));
+            const bool wireless_active = wireless_microphone_has_active_session();
+            // Close capture before any queue/network wait. The active session
+            // owns Stop even when its task has disappeared from the UI.
+            voice_audio_set_listening(false);
+            taskENTER_CRITICAL(&s_voice_control_lock);
+            const voice_control_action_t action = voice_control_begin_toggle(
+                &s_voice_control, thread_id
+            );
+            if (action != VOICE_CONTROL_ACTION_NONE) {
+                strlcpy(thread_id, s_voice_control.thread_id, sizeof(thread_id));
+            }
+            taskEXIT_CRITICAL(&s_voice_control_lock);
+            if (action != VOICE_CONTROL_ACTION_NONE) {
                 if (action == VOICE_CONTROL_ACTION_MUTE) {
                     attention_ui_set_voice_state(thread_id, ATTENTION_VOICE_MUTED);
                 }

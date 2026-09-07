@@ -27,5 +27,26 @@ int main(void)
     assert(voice_control_begin_toggle(&control, "task-one") == VOICE_CONTROL_ACTION_MUTE);
     assert(voice_control_focus_result(&control, true, "task-one") == VOICE_CONTROL_ACTION_NONE);
     assert(control.state == ATTENTION_VOICE_MUTED);
+    // UI filtering, Settings, and a changed selection must never strand Stop
+    // or redirect a recording's completion to another task.
+    const attention_voice_state_t active_states[] = {
+        ATTENTION_VOICE_FOCUSING, ATTENTION_VOICE_STARTING, ATTENTION_VOICE_LISTENING,
+    };
+    const char *selections[] = { NULL, "", "task-two" };
+    for (unsigned i = 0; i < sizeof(active_states) / sizeof(active_states[0]); ++i) {
+        for (unsigned j = 0; j < sizeof(selections) / sizeof(selections[0]); ++j) {
+            voice_control_init(&control);
+            strcpy(control.thread_id, "recorded-task");
+            control.state = active_states[i];
+            assert(voice_control_begin_toggle(&control, selections[j]) == VOICE_CONTROL_ACTION_MUTE);
+            assert(strcmp(control.thread_id, "recorded-task") == 0);
+            assert(control.state == ATTENTION_VOICE_MUTED);
+            assert(voice_control_focus_result(&control, true, "recorded-task") == VOICE_CONTROL_ACTION_NONE);
+        }
+    }
+    voice_control_init(&control);
+    assert(voice_control_begin_toggle(&control, NULL) == VOICE_CONTROL_ACTION_NONE);
+    assert(voice_control_begin_toggle(&control, "") == VOICE_CONTROL_ACTION_NONE);
+    assert(voice_control_begin_toggle(&control, "next-task") == VOICE_CONTROL_ACTION_FOCUS);
     return 0;
 }
