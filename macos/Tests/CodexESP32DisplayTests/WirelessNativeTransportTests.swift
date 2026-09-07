@@ -70,6 +70,15 @@ final class WirelessNativeTransportTests: XCTestCase {
                     throw Failure.setup("PKCS12 import: \(result)")
                 }
                 let identity = value as! SecIdentity
+                var privateKey: SecKey?
+                guard SecIdentityCopyPrivateKey(identity, &privateKey) == errSecSuccess,
+                      let privateKey else { throw Failure.setup("private key unavailable") }
+                var signingError: Unmanaged<CFError>?
+                guard SecKeyCreateSignature(privateKey, .rsaSignatureMessagePKCS1v15SHA256,
+                    Data("native-test-key-check".utf8) as CFData, &signingError) != nil else {
+                    let code = signingError.map { CFErrorGetCode($0.takeRetainedValue()) } ?? 0
+                    throw Failure.setup("fixture key signing failed: \(code)")
+                }
                 var certificate: SecCertificate?
                 guard SecIdentityCopyCertificate(identity, &certificate) == errSecSuccess,
                       let certificate else { throw Failure.setup("certificate missing") }
@@ -104,9 +113,13 @@ final class WirelessNativeTransportTests: XCTestCase {
 
     private final class Peer: @unchecked Sendable {
         private let queue = DispatchQueue(label: "test.native-microphone.peer")
-        private let condition = NSCondition()
+        // All mailbox state is confined to the NWConnection callback queue.
+        // Tests suspend rather than blocking the XCTest/main executor while
+        // Network.framework and Security perform asynchronous setup.
         private var messages: [Wire.ControlMessage] = []
         private var closed = false
+        private var waiter: (UUID, CheckedContinuation<Wire.ControlMessage, Error>)?
+        private var closeWaiter: (UUID, CheckedContinuation<Bool, Never>)?
         let connection: NWConnection
 
         init(port: UInt16, fixture: IdentityFixture, serverName: String = "localhost") {
@@ -121,7 +134,10 @@ final class WirelessNativeTransportTests: XCTestCase {
                 let configured = SecTrustSetAnchorCertificates(value, anchors) == errSecSuccess
                     && SecTrustSetAnchorCertificatesOnly(value, true) == errSecSuccess
                     && SecTrustSetPolicies(value, policy) == errSecSuccess
-                complete(configured && SecTrustEvaluateWithError(value, nil))
+                var trustError: CFError?
+                let trusted = configured && SecTrustEvaluateWithError(value, &trustError)
+                print("native-test tls-verify configured=\(configured) trusted=\(trusted) code=\(trustError.map { CFErrorGetCode($0) } ?? 0)")
+                complete(trusted)
             }, queue)
             let parameters = NWParameters(tls: tls)
             let websocket = NWProtocolWebSocket.Options()
@@ -132,8 +148,15 @@ final class WirelessNativeTransportTests: XCTestCase {
             connection.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
                 switch state {
-                case .ready: self.receive()
-                case .failed, .cancelled: self.markClosed()
+                case .ready:
+                    print("native-test peer-ready")
+                    self.receive()
+                case let .failed(error):
+                    print("native-test peer-failed \(error)")
+                    self.markClosed()
+                case let .waiting(error): print("native-test peer-waiting \(error)")
+                case .preparing: print("native-test peer-preparing")
+                case .cancelled: self.markClosed()
                 default: break
                 }
             }
@@ -141,7 +164,15 @@ final class WirelessNativeTransportTests: XCTestCase {
         }
         func cancel() { connection.cancel() }
         private func markClosed() {
-            condition.lock(); closed = true; condition.broadcast(); condition.unlock()
+            closed = true
+            if let (_, continuation) = waiter {
+                waiter = nil
+                continuation.resume(throwing: Failure.closed)
+            }
+            if let (_, continuation) = closeWaiter {
+                closeWaiter = nil
+                continuation.resume(returning: true)
+            }
         }
         private func receive() {
             connection.receiveMessage { [weak self] data, context, complete, error in
@@ -151,10 +182,10 @@ final class WirelessNativeTransportTests: XCTestCase {
                         as? NWProtocolWebSocket.Metadata else { self.markClosed(); return }
                 if metadata.opcode == .close { self.markClosed(); return }
                 if complete, metadata.opcode == .text, let data, let message = try? Wire.decodeControl(data) {
-                    self.condition.lock()
-                    self.messages.append(message)
-                    self.condition.broadcast()
-                    self.condition.unlock()
+                    if let (_, continuation) = self.waiter {
+                        self.waiter = nil
+                        continuation.resume(returning: message)
+                    } else { self.messages.append(message) }
                 }
                 self.receive()
             }
@@ -166,22 +197,38 @@ final class WirelessNativeTransportTests: XCTestCase {
             connection.send(content: data, contentContext: context, isComplete: true,
                 completion: .contentProcessed { [weak self] error in if error != nil { self?.markClosed() } })
         }
-        func next(timeout: TimeInterval = 5) throws -> Wire.ControlMessage {
-            let deadline = Date().addingTimeInterval(timeout)
-            condition.lock(); defer { condition.unlock() }
-            while messages.isEmpty && !closed {
-                if !condition.wait(until: deadline) { throw Failure.timeout }
+        func next(timeout: TimeInterval = 5) async throws -> Wire.ControlMessage {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    if !self.messages.isEmpty {
+                        continuation.resume(returning: self.messages.removeFirst()); return
+                    }
+                    if self.closed { continuation.resume(throwing: Failure.closed); return }
+                    precondition(self.waiter == nil)
+                    let id = UUID()
+                    self.waiter = (id, continuation)
+                    self.queue.asyncAfter(deadline: .now() + timeout) {
+                        guard let (pending, callback) = self.waiter, pending == id else { return }
+                        self.waiter = nil
+                        callback.resume(throwing: Failure.timeout)
+                    }
+                }
             }
-            guard !messages.isEmpty else { throw Failure.closed }
-            return messages.removeFirst()
         }
-        func expectClosed(timeout: TimeInterval = 5) -> Bool {
-            let deadline = Date().addingTimeInterval(timeout)
-            condition.lock(); defer { condition.unlock() }
-            while !closed {
-                if !condition.wait(until: deadline) { return false }
+        func expectClosed(timeout: TimeInterval = 5) async -> Bool {
+            await withCheckedContinuation { continuation in
+                queue.async {
+                    if self.closed { continuation.resume(returning: true); return }
+                    precondition(self.closeWaiter == nil)
+                    let id = UUID()
+                    self.closeWaiter = (id, continuation)
+                    self.queue.asyncAfter(deadline: .now() + timeout) {
+                        guard let (pending, callback) = self.closeWaiter, pending == id else { return }
+                        self.closeWaiter = nil
+                        callback.resume(returning: false)
+                    }
+                }
             }
-            return true
         }
     }
 
@@ -199,24 +246,29 @@ final class WirelessNativeTransportTests: XCTestCase {
         }
     }
 
-    private func startServer(_ server: WirelessMicrophoneServer) throws -> UInt16 {
+    private func startServer(_ server: WirelessMicrophoneServer) async throws -> UInt16 {
         let ready = expectation(description: "real TLS listener ready")
-        server.onStateChange = { if case .ready = $0 { ready.fulfill() } }
+        server.onStateChange = {
+            print("native-test listener-state \($0)")
+            if case .ready = $0 { ready.fulfill() }
+        }
         try server.start()
-        wait(for: [ready], timeout: 5)
+        await fulfillment(of: [ready], timeout: 5)
         guard case let .ready(port) = server.state else { throw Failure.setup("listener not ready") }
         return port
     }
-    private func authenticate(_ peer: Peer, fixture: IdentityFixture) throws {
+    private func authenticate(_ peer: Peer, fixture: IdentityFixture) async throws {
         try peer.send(.init(.hello, deviceID: fixture.pairing.boardID, credential: fixture.pairing.credential))
-        XCTAssertEqual(try peer.next().type, .capabilities)
+        let response = try await peer.next()
+        XCTAssertEqual(response.type, .capabilities)
     }
-    private func arm(_ peer: Peer, requestID: String) throws -> Wire.ControlMessage {
+    private func arm(_ peer: Peer, requestID: String) async throws -> Wire.ControlMessage {
         try peer.send(.init(.start, requestID: requestID, threadID: threadID, transport: "wifi"))
-        let prepared = try peer.next()
+        let prepared = try await peer.next()
         XCTAssertEqual(prepared.type, .prepared)
         try peer.send(.init(.commit, sessionID: prepared.sessionID, generation: prepared.generation))
-        XCTAssertEqual(try peer.next().type, .armed)
+        let armed = try await peer.next()
+        XCTAssertEqual(armed.type, .armed)
         return prepared
     }
     private func audio(_ peer: Peer, prepared: Wire.ControlMessage) throws {
@@ -226,7 +278,18 @@ final class WirelessNativeTransportTests: XCTestCase {
         peer.send(data, opcode: .binary)
     }
 
-    func testRealTLSHandshakePCMDrainDuplicateStopAndFreshSession() throws {
+    private func expect(_ type: Wire.ControlType, from peer: Peer) async throws {
+        let message = try await peer.next()
+        XCTAssertEqual(message.type, type)
+    }
+    private func expectNoMessage(from peer: Peer) async throws {
+        do {
+            _ = try await peer.next(timeout: 0.1)
+            XCTFail("Unexpected control response")
+        } catch Failure.timeout { /* expected: connected and silent */ }
+    }
+
+    func testRealTLSHandshakePCMDrainDuplicateStopAndFreshSession() async throws {
         let fixture = try IdentityFixture()
         let server = WirelessMicrophoneServer(configuration: .init(port: 0,
             pairingProvider: { fixture.pairing }, identityProvider: { fixture.identity }))
@@ -236,32 +299,31 @@ final class WirelessNativeTransportTests: XCTestCase {
         server.onStart = { _, _ in true }
         server.onAudioFrame = { $0.sequence == 0 && $0.pcm.count == Wire.pcmBytesPerFrame }
         server.onStop = { _, _, _ in stopEntered.fulfill(); return await gate.wait() }
-        let peer = Peer(port: try startServer(server), fixture: fixture)
+        let port = try await startServer(server)
+        let peer = Peer(port: port, fixture: fixture)
         defer { peer.cancel(); server.stop(); Task { await gate.release() } }
-        try authenticate(peer, fixture: fixture)
-        let first = try arm(peer, requestID: "physical-1")
+        try await authenticate(peer, fixture: fixture)
+        let first = try await arm(peer, requestID: "physical-1")
         try audio(peer, prepared: first)
-        XCTAssertEqual(try peer.next().type, .listening)
+        try await expect(.listening, from: peer)
         let stop = Wire.ControlMessage(.stop, sessionID: first.sessionID,
             generation: first.generation, finalSequence: 1)
         try peer.send(stop)
-        wait(for: [stopEntered], timeout: 5)
+        await fulfillment(of: [stopEntered], timeout: 5)
         try peer.send(stop)
-        XCTAssertThrowsError(try peer.next(timeout: 0.1)) { error in
-            guard case Failure.timeout = error else { return XCTFail("stop must remain pending, not close") }
-        }
+        try await expectNoMessage(from: peer)
         Task { await gate.release() }
-        XCTAssertEqual(try peer.next().type, .stopped)
+        try await expect(.stopped, from: peer)
         // Reuse one authenticated real connection. A stale local cancellation
         // must not close the replacement session.
-        let second = try arm(peer, requestID: "physical-2")
+        let second = try await arm(peer, requestID: "physical-2")
         XCTAssertNotEqual(first.sessionID, second.sessionID)
         server.cancelActiveSession(sessionID: try XCTUnwrap(first.sessionID.flatMap(UUID.init(uuidString:))))
         try audio(peer, prepared: second)
-        XCTAssertEqual(try peer.next().type, .listening)
+        try await expect(.listening, from: peer)
     }
 
-    func testRealTLSNameVerificationSinkRejectionAndReconnect() throws {
+    func testRealTLSNameVerificationSinkRejectionAndReconnect() async throws {
         let fixture = try IdentityFixture()
         let server = WirelessMicrophoneServer(configuration: .init(port: 0,
             pairingProvider: { fixture.pairing }, identityProvider: { fixture.identity }))
@@ -269,31 +331,33 @@ final class WirelessNativeTransportTests: XCTestCase {
         server.onStart = { _, _ in true }
         server.onAudioFrame = { _ in false }
         server.onSessionFailure = { _, _, _ in failed.fulfill() }
-        let port = try startServer(server)
+        let port = try await startServer(server)
         defer { server.stop() }
         let wrongName = Peer(port: port, fixture: fixture, serverName: "not-localhost.invalid")
         defer { wrongName.cancel() }
-        XCTAssertTrue(wrongName.expectClosed())
+        let nameRejected = await wrongName.expectClosed()
+        XCTAssertTrue(nameRejected)
         // A rejected handshake may finish its server-side cancellation on the
         // next queue turn. A bounded retry here opens only TLS, never a take.
         var peer: Peer?
         for _ in 0..<5 {
             let candidate = Peer(port: port, fixture: fixture)
-            do { try authenticate(candidate, fixture: fixture); peer = candidate; break }
+            do { try await authenticate(candidate, fixture: fixture); peer = candidate; break }
             catch { candidate.cancel() }
         }
         let current = try XCTUnwrap(peer)
         defer { current.cancel() }
-        let prepared = try arm(current, requestID: "rejected-audio")
+        let prepared = try await arm(current, requestID: "rejected-audio")
         try audio(current, prepared: prepared)
-        XCTAssertTrue(current.expectClosed())
-        wait(for: [failed], timeout: 5)
-        if let message = try? current.next(timeout: 0.1) { XCTAssertNotEqual(message.type, .listening) }
+        let sinkRejected = await current.expectClosed()
+        XCTAssertTrue(sinkRejected)
+        await fulfillment(of: [failed], timeout: 5)
+        if let message = try? await current.next(timeout: 0.1) { XCTAssertNotEqual(message.type, .listening) }
         let replacement = Peer(port: port, fixture: fixture)
         defer { replacement.cancel() }
-        try authenticate(replacement, fixture: fixture)
+        try await authenticate(replacement, fixture: fixture)
         // No automatic recording on reconnection; an explicit new start is
         // needed, and no audio is sent by authenticate().
-        XCTAssertThrowsError(try replacement.next(timeout: 0.1))
+        try await expectNoMessage(from: replacement)
     }
 }
