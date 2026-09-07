@@ -527,7 +527,11 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 if let error { self.fail(context, error.localizedDescription); return }
                 guard let metadata = contentContext?.protocolMetadata(definition: NWProtocolWebSocket.definition)
                     as? NWProtocolWebSocket.Metadata else {
-                    self.fail(context, "missing WebSocket message metadata"); return
+                    let ended = data == nil && isComplete
+                    DictationDiagnostics.record(ended ? "wifi-receive-ended" : "wifi-receive-metadata-missing")
+                    self.fail(context, ended
+                        ? "Wireless microphone disconnected. Check the board’s Wi-Fi mic status."
+                        : "missing WebSocket message metadata"); return
                 }
                 if let data { self.handle(context, data: data, opcode: metadata.opcode, isComplete: isComplete) }
                 else if isComplete {
@@ -591,6 +595,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 startHeartbeat(context)
                 send(context, capabilities)
             case .start:
+                DictationDiagnostics.record("wifi-start-received")
                 let before = context.session.snapshot
                 let existingRequest = context.startRequestID
                 let prepared = try context.session.start(message)
@@ -607,8 +612,11 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 }
                 context.startRequestID = message.requestID
                 context.startDecision = .pending
+                let preparationStarted = DispatchTime.now().uptimeNanoseconds
                 Task {
                     let accepted = await self.onStart?(threadID, sessionID) ?? false
+                    let elapsed = (DispatchTime.now().uptimeNanoseconds - preparationStarted) / 1_000_000
+                    DictationDiagnostics.record("wifi-prepare-\(accepted ? "ready" : "rejected")-ms-\(elapsed)")
                     self.queue.async {
                         guard self.connection === context,
                               context.session.phase == .prepared,
@@ -632,6 +640,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                     }
                 }
             case .commit:
+                DictationDiagnostics.record("wifi-commit-received")
                 send(context, try context.session.commit(message))
             case .stop:
                 guard let sessionID = message.sessionID.flatMap(UUID.init(uuidString:)),
@@ -651,6 +660,8 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                     self.queue.async { if self.connection === context { self.send(context, stopped) } }
                 }
             case .cancel:
+                DictationDiagnostics.record("wifi-board-cancel-phase-\(context.session.phase.rawValue)",
+                    samples: Int(context.session.acceptedFrames) * WirelessMicrophoneProtocol.samplesPerFrame)
                 try context.session.cancel(message)
                 reportFailureIfNeeded(context, reason: "Wireless microphone session canceled by the board.")
                 context.connection.cancel()
@@ -667,6 +678,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         do {
             let frame = try WirelessMicrophoneProtocol.decodeAudioFrame(data)
             let response = try context.session.acceptAudio(frame)
+            if frame.sequence == 0 { DictationDiagnostics.record("wifi-first-frame-received") }
             onAudioFrame?(frame)
             if let response { send(context, response) }
         } catch {
@@ -680,6 +692,9 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let content = NWConnection.ContentContext(identifier: "codex-microphone-control", metadata: [metadata])
         context.connection.send(content: data, contentContext: content, isComplete: true, completion: .contentProcessed { [weak self, weak context] error in
+            if message.type == .prepared || message.type == .armed || message.type == .listening {
+                DictationDiagnostics.record("wifi-send-\(message.type.rawValue)-\(error == nil ? "processed" : "failed")")
+            }
             guard let self, let context, let error else { return }
             self.queue.async { self.fail(context, error.localizedDescription) }
         })
