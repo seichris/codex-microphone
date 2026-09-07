@@ -144,7 +144,10 @@ final class WirelessNativeTransportTests: XCTestCase {
             websocket.autoReplyPing = true
             websocket.setSubprotocols([Wire.subprotocol])
             parameters.defaultProtocolStack.applicationProtocols.insert(websocket, at: 0)
-            connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: parameters)
+            // WebSocket's HTTP upgrade needs a URL (scheme, authority and path),
+            // not just the host/port endpoint used for a raw TLS connection.
+            let endpoint = NWEndpoint.url(URL(string: "wss://localhost:\(port)/")!)
+            connection = NWConnection(to: endpoint, using: parameters)
             connection.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
                 switch state {
@@ -154,7 +157,12 @@ final class WirelessNativeTransportTests: XCTestCase {
                 case let .failed(error):
                     print("native-test peer-failed \(error)")
                     self.markClosed()
-                case let .waiting(error): print("native-test peer-waiting \(error)")
+                case let .waiting(error):
+                    print("native-test peer-waiting \(error)")
+                    // This peer is one test attempt, not an auto-reconnecting
+                    // client. Release failed TLS handshakes instead of keeping
+                    // the server's single-board slot until the test deadline.
+                    self.connection.cancel()
                 case .preparing: print("native-test peer-preparing")
                 case .cancelled: self.markClosed()
                 default: break
