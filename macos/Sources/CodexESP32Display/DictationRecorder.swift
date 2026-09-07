@@ -99,9 +99,18 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                         self.queue.async {
                             guard self.generation == id else { return }
                             if let result {
+                                let segments = result.bestTranscription.segments
+                                let start = segments.first?.timestamp
+                                let end = segments.last.map { $0.timestamp + $0.duration }
+                                let audioRange: Range<TimeInterval>?
+                                if let start, let end, start.isFinite, end.isFinite, start >= 0, end > start {
+                                    audioRange = start..<end
+                                } else {
+                                    audioRange = nil
+                                }
                                 let transcript = self.transcriptAccumulator.update(
                                     result.bestTranscription.formattedString,
-                                    completedPartial: result.speechRecognitionMetadata != nil
+                                    audioRange: audioRange
                                 )
                                 self.event?(.transcript(transcript, final: result.isFinal))
                                 if result.isFinal { self.cleanup(); return }
