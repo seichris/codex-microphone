@@ -20,21 +20,28 @@ jobs:
           import re
           import urllib.request
           from pathlib import Path
+          class SafeRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+                  if redirected is not None:
+                      redirected.remove_header('Authorization')
+                  return redirected
+          opener = urllib.request.build_opener(SafeRedirect())
           output = []
           for job in [101709135384, 101709135205]:
               request = urllib.request.Request(
                   f'https://api.github.com/repos/seichris/codex-microphone/actions/jobs/{job}/logs',
                   headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                            'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(request, timeout=60) as response:
+              with opener.open(request, timeout=60) as response:
                   text = response.read().decode('utf-8', errors='replace')
               lines = text.splitlines()
               indices = set()
               for i, line in enumerate(lines):
                   if re.search(r'error:|FAILED:|undefined reference|fatal error|CMake Error', line):
-                      indices.update(range(max(0, i-3), min(len(lines), i+6)))
+                      indices.update(range(max(0, i-2), min(len(lines), i+5)))
               output.append(f'\nJOB {job}\n')
-              output.extend(lines[i] for i in sorted(indices))
+              output.extend(lines[i] for i in sorted(indices) if len(lines[i]) < 3000)
           text = '\n'.join(output)
           Path('firmware-errors.txt').write_text(text)
           print(text)
