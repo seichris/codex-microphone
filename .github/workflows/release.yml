@@ -90,63 +90,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Require Apple release credentials
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
-        run: |
-          test -n "$APPLE_CERTIFICATE_BASE64"
-          test -n "$APPLE_CERTIFICATE_PASSWORD"
-          test -n "$APPLE_SIGNING_IDENTITY"
-          test -n "$APPLE_API_KEY_BASE64"
-          test -n "$APPLE_API_KEY_ID"
-          test -n "$APPLE_ISSUER_ID"
-      - name: Import Developer ID certificate
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          certificate_path="$RUNNER_TEMP/developer-id.p12"
-          keychain_path="$RUNNER_TEMP/codex-release.keychain-db"
-          keychain_password="$(openssl rand -hex 24)"
-          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security list-keychains -d user -s "$keychain_path"
-          security default-keychain -s "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
-      - name: Build and sign Mac companion
-        env:
-          CODEX_DISPLAY_SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      - name: Build Mac companion
         run: ./macos/build_app.sh
-      - name: Verify signed app
+      - name: Verify and archive Mac companion
         run: |
           codesign --verify --deep --strict "macos/build/Codex ESP32 Display.app"
           test ! -e "macos/build/Codex ESP32 Display.app/Contents/Resources/bridge/config.json"
-          ditto -c -k --keepParent "macos/build/Codex ESP32 Display.app" \
-            "macos/build/Codex ESP32 Display-${GITHUB_REF_NAME#v}.zip"
-      - name: Notarize and staple Mac companion
-        env:
-          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
-        run: |
-          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          printf '%s' "$APPLE_API_KEY_BASE64" | base64 -D > "$api_key_path"
           zip_path="macos/build/Codex ESP32 Display-${GITHUB_REF_NAME#v}.zip"
-          xcrun notarytool submit "$zip_path" --key "$api_key_path" \
-            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_ISSUER_ID" --wait
-          xcrun stapler staple "macos/build/Codex ESP32 Display.app"
-          xcrun stapler validate "macos/build/Codex ESP32 Display.app"
-          codesign --verify --deep --strict "macos/build/Codex ESP32 Display.app"
-          spctl --assess --type execute --verbose=4 "macos/build/Codex ESP32 Display.app"
           ditto -c -k --keepParent "macos/build/Codex ESP32 Display.app" "$zip_path"
           shasum -a 256 "$zip_path" > "macos/build/SHA256SUMS"
       - uses: actions/upload-artifact@v4
@@ -185,7 +135,7 @@ jobs:
           ## Codex Microphone ${version}
 
           - Generic ESP32-S3 firmware archive: ${firmware_archive}
-          - Notarized Mac companion archive: Codex ESP32 Display-${version}.zip
+          - Ad-hoc-signed Mac companion archive: Codex ESP32 Display-${version}.zip
           - SHA-256 checksums: SHA256SUMS
 
           Provision Wi-Fi, bridge, and pairing values locally before flashing.

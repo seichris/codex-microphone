@@ -7,8 +7,8 @@ request. A release tag must be exactly `vVERSION`.
 
 The release workflow builds two generic artifacts:
 
-- a notarized `Codex ESP32 Display` Mac app, with bridge source but no bridge
-  config or bearer token; and
+- an ad-hoc-signed `Codex ESP32 Display` Mac app, with bridge source but no
+  bridge config or bearer token; and
 - an ESP32-S3 firmware archive built from `firmware/sdkconfig.defaults`, with
   no Wi-Fi credentials, bridge token, pairing credential, or private key.
 
@@ -39,16 +39,14 @@ token.
 
 ## Publishing a release
 
-The tag workflow expects these GitHub Actions secrets for the Mac artifact:
+The Mac artifact is ad-hoc-signed for integrity but is not signed with a
+Developer ID certificate and is not notarized. macOS may therefore show a
+Gatekeeper warning on first launch; users can approve it in System Settings or
+use Finder's Open action. Developer ID signing and notarization can be added
+later without changing the release layout.
 
-- `APPLE_CERTIFICATE_BASE64` and `APPLE_CERTIFICATE_PASSWORD` for a Developer
-  ID Application certificate;
-- `APPLE_SIGNING_IDENTITY` containing the certificate's exact identity; and
-- `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, and `APPLE_ISSUER_ID` for
-  `notarytool`.
-
-After configuring those secrets and enabling the repository's immutable release
-setting, update `VERSION`, run the local checks, and push the matching tag:
+After enabling the repository's immutable release setting, update `VERSION`,
+run the local checks, and push the matching tag:
 
 ```bash
 python3 scripts/check_no_secrets.py
@@ -57,6 +55,6 @@ git tag "v$(cat VERSION)"
 git push origin "v$(cat VERSION)"
 ```
 
-The workflow validates the tag, builds the firmware and app, notarizes the Mac
-archive, generates SHA-256 checksums, and publishes the release assets. A tag
-with a mismatched version or a failed credential check stops before publishing.
+The workflow validates the tag, builds the firmware and app, generates SHA-256
+checksums, and publishes the release assets. A tag with a mismatched version or
+a failed safety check stops before publishing.
