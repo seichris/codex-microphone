@@ -84,14 +84,11 @@ final class DesktopVoiceController: ObservableObject {
                 return await self.acceptWirelessStart(threadID: threadID, sessionID: sessionID)
             }
             wirelessServer.onStop = { [weak self] threadID, sessionID, _ in
-                guard let self else { return }
-                await MainActor.run {
-                    guard self.dictation.wirelessSessionID == sessionID else { return }
-                    try? self.dictation.finish(threadId: threadID)
-                }
+                guard let self else { return false }
+                return await self.dictation.finishWireless(threadId: threadID, sessionID: sessionID)
             }
             wirelessServer.onAudioFrame = { [weak dictation] frame in
-                dictation?.appendWirelessFrame(frame)
+                dictation?.appendWirelessFrame(frame) ?? false
             }
             wirelessServer.onSessionFailure = { [weak self] threadID, sessionID, reason in
                 guard let self else { return }

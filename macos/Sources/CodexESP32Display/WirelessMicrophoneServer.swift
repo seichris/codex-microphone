@@ -269,10 +269,18 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
     struct Configuration: Sendable {
         let port: UInt16
         let pairingStore: WirelessPairingStore
+        // Injectable identity sources let native TLS tests use an isolated
+        // temporary keychain, without reading or replacing production pairing.
+        let pairingProvider: (@Sendable () -> WirelessPairing?)?
+        let identityProvider: (@Sendable () -> SecIdentity?)?
 
-        init(port: UInt16 = 5_181, pairingStore: WirelessPairingStore = .shared) {
+        init(port: UInt16 = 5_181, pairingStore: WirelessPairingStore = .shared,
+             pairingProvider: (@Sendable () -> WirelessPairing?)? = nil,
+             identityProvider: (@Sendable () -> SecIdentity?)? = nil) {
             self.port = port
             self.pairingStore = pairingStore
+            self.pairingProvider = pairingProvider
+            self.identityProvider = identityProvider
         }
     }
 
@@ -291,6 +299,9 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         var heartbeat: WirelessConnectionHeartbeat?
         var startRequestID: String?
         var startDecision: StartDecision?
+        var preparationDeadline: DispatchWorkItem?
+        var stopPending: UUID?
+        var stopCompleted = false
         var suppressFailureCallback = false
         var failureCallbackReported = false
 
@@ -322,9 +333,10 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
     /// Called after the board's start is accepted and before `prepared` is sent.
     var onStart: (@Sendable (String, UUID) async -> Bool)?
     /// Called after a valid stop, before `stopped` is sent to the board.
-    var onStop: (@Sendable (String, UUID, UInt32) async -> Void)?
-    /// Called only after the session is armed and a frame has passed validation.
-    var onAudioFrame: (@Sendable (WirelessMicrophoneProtocol.AudioFrame) -> Void)?
+    var onStop: (@Sendable (String, UUID, UInt32) async -> Bool)?
+    /// Return true only after bounded recorder-queue admission. ACKs mean
+    /// admission, not successful Speech recognition or composer delivery.
+    var onAudioFrame: (@Sendable (WirelessMicrophoneProtocol.AudioFrame) -> Bool)?
     /// Called when an active session ends without a valid board stop. The
     /// receiver must cancel local Speech capture and keep any partial text for
     /// review instead of treating the interruption as a successful draft.
@@ -341,7 +353,15 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         return false
     }
 
-    var configurationPairing: WirelessPairing? { onQueue { configuration.pairingStore.pairing } }
+    private var pairingOnQueue: WirelessPairing? {
+        if let provider = configuration.pairingProvider { return provider() }
+        return configuration.pairingStore.pairing
+    }
+    private var identityOnQueue: SecIdentity? {
+        if let provider = configuration.identityProvider { return provider() }
+        return configuration.pairingStore.serverIdentity()
+    }
+    var configurationPairing: WirelessPairing? { onQueue { pairingOnQueue } }
 
     func importPairingBundle(_ data: Data) throws -> WirelessPairing {
         try onQueue {
@@ -362,12 +382,13 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
     /// Cancels an in-flight board session when a local UI/legacy command ends
     /// recognition. A normal board-originated stop has already moved the
     /// session to `.stopped`, so this is a no-op in that case.
-    func cancelActiveSession() {
+    func cancelActiveSession(sessionID: UUID) {
         queue.async {
-            guard let context = self.connection else { return }
+            guard let context = self.connection, context.session.sessionID == sessionID else { return }
             switch context.session.phase {
             case .prepared, .armed, .listening:
                 context.suppressFailureCallback = true
+                context.preparationDeadline?.cancel()
                 context.heartbeat?.stop()
                 context.connection.cancel()
                 if self.connection === context { self.connection = nil }
@@ -381,8 +402,8 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
 
     private func startOnQueue() throws {
         guard listener == nil else { return }
-        guard let identity = configuration.pairingStore.serverIdentity(),
-              let pairing = configuration.pairingStore.pairing else {
+        guard let identity = identityOnQueue,
+              let pairing = pairingOnQueue else {
             storedState = .failed(WirelessMicrophoneServerError.pairingNotConfigured.description)
             onStateChange?(state)
             throw WirelessMicrophoneServerError.pairingNotConfigured
@@ -416,7 +437,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         parameters.defaultProtocolStack.applicationProtocols.insert(webSocket, at: 0)
 
         let listener: NWListener
-        do { listener = try NWListener(using: parameters, on: port) }
+        do { listener = try NWListener(using: parameters, on: configuration.port == 0 ? .any : port) }
         catch {
             storedState = .failed(error.localizedDescription)
             onStateChange?(state)
@@ -433,7 +454,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 guard self.listener === listener else { return }
                 switch newState {
                 case .ready:
-                    self.storedState = .ready(port: pairing.port)
+                    self.storedState = .ready(port: listener.port?.rawValue ?? pairing.port)
                 case let .failed(error):
                     self.storedState = .failed(error.localizedDescription)
                     self.listener = nil
@@ -465,6 +486,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
             reportFailureIfNeeded(context, reason: "Wireless microphone listener stopped or pairing changed.")
         }
         connection?.authDeadline?.cancel()
+        connection?.preparationDeadline?.cancel()
         connection?.heartbeat?.stop()
         connection?.connection.cancel()
         connection = nil
@@ -478,7 +500,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         // One active board is deliberate in v1. Do not let an untrusted second
         // connection interrupt an acknowledged recording.
         guard self.connection == nil else { connection.cancel(); return }
-        guard let pairing = configuration.pairingStore.pairing else { connection.cancel(); return }
+        guard let pairing = pairingOnQueue else { connection.cancel(); return }
         let context = ConnectionContext(
             connection: connection,
             credential: pairing.credential,
@@ -547,6 +569,9 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
     }
 
     private func handle(_ context: ConnectionContext, data: Data, opcode: NWProtocolWebSocket.Opcode, isComplete: Bool) {
+        // Control frames never belong to a partially assembled data message.
+        if opcode == .ping || opcode == .pong { return }
+        if opcode == .close { fail(context, "Wireless microphone connection closed."); return }
         if !isComplete {
             let limit = (opcode == .binary || context.fragmentedOpcode == .binary)
                 ? WirelessMicrophoneProtocol.maxAudioMessageLength
@@ -596,6 +621,9 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 send(context, capabilities)
             case .start:
                 DictationDiagnostics.record("wifi-start-received")
+                guard context.stopPending == nil else {
+                    throw WirelessMicrophoneSession.Error.invalidState("start before recorder drained")
+                }
                 let before = context.session.snapshot
                 let existingRequest = context.startRequestID
                 let prepared = try context.session.start(message)
@@ -612,6 +640,17 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 }
                 context.startRequestID = message.requestID
                 context.startDecision = .pending
+                context.stopCompleted = false
+                context.failureCallbackReported = false
+                context.suppressFailureCallback = false
+                context.preparationDeadline?.cancel()
+                let deadline = DispatchWorkItem { [weak self, weak context] in
+                    guard let self, let context, self.connection === context,
+                          context.session.sessionID == sessionID, context.session.phase == .prepared else { return }
+                    self.fail(context, "Wireless microphone preparation or commit timed out.")
+                }
+                context.preparationDeadline = deadline
+                queue.asyncAfter(deadline: .now() + 5, execute: deadline)
                 let preparationStarted = DispatchTime.now().uptimeNanoseconds
                 Task {
                     let accepted = await self.onStart?(threadID, sessionID) ?? false
@@ -620,6 +659,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                     self.queue.async {
                         guard self.connection === context,
                               context.session.phase == .prepared,
+                              context.session.sessionID == sessionID,
                               context.startDecision == .pending else {
                             // The disconnect callback may have run before
                             // onStart finished preparing Speech. Clean up
@@ -641,7 +681,12 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 }
             case .commit:
                 DictationDiagnostics.record("wifi-commit-received")
-                send(context, try context.session.commit(message))
+                guard context.startDecision == .accepted else {
+                    throw WirelessMicrophoneSession.Error.invalidState("commit before receiver ready")
+                }
+                let armed = try context.session.commit(message)
+                context.preparationDeadline?.cancel()
+                send(context, armed)
             case .stop:
                 guard let sessionID = message.sessionID.flatMap(UUID.init(uuidString:)),
                       let threadID = context.session.threadID,
@@ -649,21 +694,30 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 let before = context.session.snapshot
                 let stopped = try context.session.stop(message)
                 if before.phase == .stopped {
-                    // The state machine makes stop idempotent. Do not invoke
-                    // the receiver callback twice if a retransmitted stop
-                    // arrives while the first acknowledgement is draining.
-                    send(context, stopped)
+                    // Duplicates share the original drain barrier. Never
+                    // acknowledge endAudio before the receiver has executed it.
+                    if context.stopCompleted { send(context, stopped) }
                     return
                 }
+                context.stopPending = sessionID
                 Task {
-                    await self.onStop?(threadID, sessionID, finalSequence)
-                    self.queue.async { if self.connection === context { self.send(context, stopped) } }
+                    let drained = await self.onStop?(threadID, sessionID, finalSequence) ?? false
+                    self.queue.async {
+                        guard self.connection === context, context.session.sessionID == sessionID,
+                              context.stopPending == sessionID else { return }
+                        guard drained else { self.fail(context, "Wireless recorder did not drain."); return }
+                        context.stopPending = nil
+                        context.stopCompleted = true
+                        self.send(context, stopped)
+                    }
                 }
             case .cancel:
                 DictationDiagnostics.record("wifi-board-cancel-phase-\(context.session.phase.rawValue)",
                     samples: Int(context.session.acceptedFrames) * WirelessMicrophoneProtocol.samplesPerFrame)
                 try context.session.cancel(message)
-                reportFailureIfNeeded(context, reason: "Wireless microphone session canceled by the board.")
+                reportFailureIfNeeded(context, reason: message.errorCode == "user_canceled"
+                    ? "Wireless microphone session canceled by the board."
+                    : "Wireless microphone failed on the board. Check its Wi-Fi mic diagnostic.")
                 context.connection.cancel()
             default:
                 throw WirelessMicrophoneSession.Error.invalidState("unexpected \(message.type.rawValue)")
@@ -677,9 +731,14 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
     private func handleAudio(_ context: ConnectionContext, data: Data) {
         do {
             let frame = try WirelessMicrophoneProtocol.decodeAudioFrame(data)
-            let response = try context.session.acceptAudio(frame)
-            if frame.sequence == 0 { DictationDiagnostics.record("wifi-first-frame-received") }
-            onAudioFrame?(frame)
+            var admitted = context.session
+            let response = try admitted.acceptAudio(frame)
+            if frame.sequence == 0 { DictationDiagnostics.record("wifi-first-frame-validated") }
+            guard onAudioFrame?(frame) == true else {
+                fail(context, "Wireless microphone recorder ingress rejected audio."); return
+            }
+            context.session = admitted
+            if frame.sequence == 0 { DictationDiagnostics.record("wifi-first-frame-admitted") }
             if let response { send(context, response) }
         } catch {
             sendError(context, code: "audio_rejected", message: error.localizedDescription)
@@ -726,6 +785,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         guard connection === context else { return }
         reportFailureIfNeeded(context, reason: reason)
         context.authDeadline?.cancel()
+        context.preparationDeadline?.cancel()
         context.heartbeat?.stop()
         context.connection.cancel()
         if connection === context { connection = nil }
@@ -735,7 +795,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
     private func reportFailureIfNeeded(_ context: ConnectionContext, reason: String) {
         guard !context.suppressFailureCallback, !context.failureCallbackReported else { return }
         let snapshot = context.session.snapshot
-        guard snapshot.phase.requiresReceiverCancellation,
+        guard snapshot.phase.requiresReceiverCancellation || context.stopPending != nil,
               let threadID = snapshot.threadID,
               let sessionID = snapshot.sessionID else { return }
         context.failureCallbackReported = true
