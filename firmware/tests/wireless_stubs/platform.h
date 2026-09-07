@@ -21,6 +21,7 @@ typedef void *esp_websocket_client_handle_t;
 typedef struct {
     const char *uri, *cert_common_name, *cert_pem, *subprotocol;
     int buffer_size, task_stack;
+    bool enable_close_reconnect;
 } esp_websocket_client_config_t;
 typedef struct {
     int esp_tls_last_esp_err, esp_tls_stack_err, esp_tls_cert_verify_flags;

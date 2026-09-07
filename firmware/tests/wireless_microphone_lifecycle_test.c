@@ -63,7 +63,7 @@ EventBits_t xEventGroupWaitBits(EventGroupHandle_t e, EventBits_t b, int clear, 
 int64_t esp_timer_get_time(void) { return time_us; }
 void vTaskDelay(TickType_t ticks) { (void)ticks; longjmp(stream_exit, 1); }
 int xTaskCreate(void (*fn)(void *), const char *name, unsigned stack, void *arg, unsigned priority, TaskHandle_t *handle) { (void)fn; (void)name; (void)stack; (void)arg; (void)priority; (void)handle; return pdPASS; }
-esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_client_config_t *c) { (void)c; return (void *)1; }
+esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_client_config_t *c) { assert(c->enable_close_reconnect); return (void *)1; }
 esp_err_t esp_websocket_register_events(esp_websocket_client_handle_t c, int id, void (*f)(void *, esp_event_base_t, int32_t, void *), void *a) { (void)c; (void)id; (void)f; (void)a; return ESP_OK; }
 esp_err_t esp_websocket_client_start(esp_websocket_client_handle_t c) { (void)c; ++websocket_starts; return ESP_OK; }
 bool esp_websocket_client_is_connected(esp_websocket_client_handle_t c) { (void)c; return true; }
@@ -105,6 +105,7 @@ static void setup(void) {
     gate = true; close_during_read = false; fail_read = false; acknowledge_stop = false; transient_read_timeouts = 0;
     s_connected = true; s_authenticated = true; s_streaming = true; s_armed = true;
     s_pending_start = false; s_cancel_requested = false; s_failed_session = false;
+    s_last_session_failure[0] = '\0';
     s_stopping = false; s_send_in_flight = false; s_have_ack = false;
     s_generation = 1; s_next_sequence = 5; s_last_ack_ms = 0;
     strcpy(s_session_id, "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE");
@@ -130,6 +131,19 @@ int main(void) {
     wireless_microphone_get_status(bounded, sizeof(bounded));
     assert(bounded[7] == '\0');
     puts("PASS connection diagnostics retain TLS error across disconnect and report paired readiness");
+    setup();
+    fail_session("capture ring overflow");
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "capture ring overflow (frame 5)"));
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_DISCONNECTED, NULL);
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_CONNECTED, NULL);
+    s_authenticated = true;
+    fail_session("cancel send failed");
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "paired; last error: capture ring overflow"));
+    wireless_microphone_get_status(bounded, sizeof(bounded));
+    assert(bounded[7] == '\0');
+    puts("PASS originating session failure survives reconnect and secondary failure");
     setup(); wifi_ready = false;
     if (setjmp(stream_exit) == 0) connection_task(NULL);
     assert(websocket_starts == 0);

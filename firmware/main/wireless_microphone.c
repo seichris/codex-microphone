@@ -53,6 +53,8 @@ static uint32_t s_last_ack_sequence;
 static bool s_pending_start;
 static bool s_cancel_requested;
 static bool s_failed_session;
+static char s_last_session_failure[64];
+static uint32_t s_failure_sequence;
 static char s_session_id[37];
 static char s_request_id[97];
 static char s_canceled_request_id[97];
@@ -254,6 +256,12 @@ static void fail_session(const char *reason)
     ESP_LOGW(TAG, "Wireless session failed: %s", reason == NULL ? "unknown" : reason);
     bool should_cancel_remote = false;
     if (lock_state(pdMS_TO_TICKS(20))) {
+        // Keep the originating failure visible across automatic reconnects.
+        // Reasons are fixed firmware strings and contain no audio or credentials.
+        if (s_last_session_failure[0] == '\0') {
+            strlcpy(s_last_session_failure, reason == NULL ? "unknown" : reason, sizeof(s_last_session_failure));
+            s_failure_sequence = s_next_sequence;
+        }
         if (s_streaming || s_armed || s_pending_start || s_stopping) s_failed_session = true;
         should_cancel_remote = s_session_id[0] != '\0' && s_generation != 0
             && s_connected && s_authenticated;
@@ -619,6 +627,9 @@ esp_err_t wireless_microphone_init(void)
         .subprotocol = "codex-microphone.v1",
         .buffer_size = WIRELESS_MICROPHONE_MAX_CONTROL_MESSAGE_LENGTH,
         .task_stack = 6144,
+        // The Mac closes canceled sessions. A clean CLOSE otherwise stops the
+        // client task permanently, unlike a transport failure.
+        .enable_close_reconnect = true,
     };
     s_client = esp_websocket_client_init(&config);
     if (s_client == NULL) return ESP_FAIL;
@@ -645,7 +656,15 @@ void wireless_microphone_get_status(char *output, size_t capacity)
     const bool connected = s_connected;
     const bool authenticated = s_authenticated;
     const esp_websocket_error_codes_t error = s_last_connection_error;
+    char failure[sizeof(s_last_session_failure)];
+    strlcpy(failure, s_last_session_failure, sizeof(failure));
+    const uint32_t failure_sequence = s_failure_sequence;
     unlock_state();
+    if (failure[0] != '\0') {
+        snprintf(output, capacity, "Wi-Fi mic %s: %s (frame %lu)",
+            authenticated ? "paired; last error" : "error", failure, (unsigned long)failure_sequence);
+        return;
+    }
     if (authenticated) snprintf(output, capacity, "Wi-Fi mic: connected and paired");
     else if (connected) snprintf(output, capacity, "Wi-Fi mic: authenticating");
     else if (!wifi_manager_is_connected()) snprintf(output, capacity, "Wi-Fi mic: waiting for Wi-Fi");
@@ -694,6 +713,7 @@ esp_err_t wireless_microphone_start_session(const char *thread_id, const char *r
     s_have_ack = false;
     s_cancel_requested = false;
     s_failed_session = false;
+    s_last_session_failure[0] = '\0';
     s_canceled_request_id[0] = '\0';
     s_session_id[0] = '\0';
     s_generation = 0;
