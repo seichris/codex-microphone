@@ -174,6 +174,19 @@ int main(void) {
     setup(); delay_send = true; s_next_sequence = 0; stream_once();
     assert(binary_sends == 1 && s_next_sequence == 1 && !s_failed_session);
     puts("PASS 150 ms delayed audio send retains sequence and live capture");
+    setup(); fail_session("simulated recording failure");
+    assert(wireless_microphone_take_failure());
+    assert(!wireless_microphone_take_failure());
+    assert(events & WIRELESS_EVENT_FAILED);
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "simulated recording failure"));
+    // A fresh focus/start gesture must not observe the prior failure again.
+    s_pending_start = true;
+    assert(!wireless_microphone_take_failure());
+    fail_session("new preparation failure");
+    assert(wireless_microphone_take_failure());
+    assert(!wireless_microphone_take_failure());
+    puts("PASS failure notification is consumed once while waiter event and diagnostic survive");
     setup(); wifi_ready = false;
     if (setjmp(stream_exit) == 0) connection_task(NULL);
     assert(websocket_starts == 0);

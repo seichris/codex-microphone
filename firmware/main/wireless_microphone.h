@@ -10,6 +10,7 @@ bool wireless_microphone_is_ready(void);
 bool wireless_microphone_has_active_session(void);
 /** Return true after a transport/session failure until the next start attempt. */
 bool wireless_microphone_has_failed(void);
+bool wireless_microphone_take_failure(void);
 /** Bounded, credential-free connection status for the device Settings view. */
 void wireless_microphone_get_status(char *output, size_t capacity);
 

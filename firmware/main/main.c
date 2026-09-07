@@ -159,7 +159,7 @@ static void set_voice_ui(const char *thread_id, attention_voice_state_t state)
 
 static void reconcile_wireless_failure(void)
 {
-    if (!wireless_microphone_has_failed()) return;
+    if (!wireless_microphone_take_failure()) return;
 
     char thread_id[ATTENTION_ID_MAX] = { 0 };
     bool should_show_error = false;

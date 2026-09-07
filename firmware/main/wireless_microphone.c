@@ -714,6 +714,18 @@ bool wireless_microphone_has_failed(void)
     return failed;
 }
 
+bool wireless_microphone_take_failure(void)
+{
+    if (s_events == NULL || !lock_state(0)) return false;
+    const bool failed = s_failed_session
+        && (xEventGroupGetBits(s_events) & WIRELESS_EVENT_FAILED) != 0;
+    if (failed) s_failed_session = false;
+    // Keep the event bit for an in-progress start/stop waiter and keep the
+    // diagnostic text. Only UI reconciliation consumes this notification.
+    unlock_state();
+    return failed;
+}
+
 esp_err_t wireless_microphone_start_session(const char *thread_id, const char *request_id)
 {
     if (!s_enabled || thread_id == NULL || request_id == NULL || !wireless_microphone_is_ready()) return ESP_ERR_INVALID_STATE;
