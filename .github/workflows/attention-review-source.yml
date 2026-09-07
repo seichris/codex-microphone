@@ -1,23 +1,45 @@
-name: Attention review source
+name: Attention firmware diagnostics
 on:
   push:
     branches: [feat/attention-pairing-11]
     paths: [.github/workflows/attention-review-source.yml]
 permissions:
+  actions: read
   contents: read
 jobs:
-  source:
+  diagnostics:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Package exact Git history for local merge validation
-        run: git bundle create /tmp/attention-source.bundle HEAD refs/remotes/origin/main
+      - name: Extract compiler errors from completed firmware builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import os
+          import re
+          import urllib.request
+          from pathlib import Path
+          output = []
+          for job in [101709135384, 101709135205]:
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/seichris/codex-microphone/actions/jobs/{job}/logs',
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  text = response.read().decode('utf-8', errors='replace')
+              lines = text.splitlines()
+              indices = set()
+              for i, line in enumerate(lines):
+                  if re.search(r'error:|FAILED:|undefined reference|fatal error|CMake Error', line):
+                      indices.update(range(max(0, i-3), min(len(lines), i+6)))
+              output.append(f'\nJOB {job}\n')
+              output.extend(lines[i] for i in sorted(indices))
+          text = '\n'.join(output)
+          Path('firmware-errors.txt').write_text(text)
+          print(text)
       - uses: actions/upload-artifact@v4
         with:
-          name: attention-review-source
-          path: /tmp/attention-source.bundle
+          name: attention-firmware-errors
+          path: firmware-errors.txt
           retention-days: 1
