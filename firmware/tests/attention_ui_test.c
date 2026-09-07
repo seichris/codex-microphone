@@ -73,6 +73,12 @@ int main(void)
     lv_display_set_buffers(display, draw_buffer, NULL, sizeof(draw_buffer), LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(display, flush);
     attention_ui_init(NULL, NULL, NULL);
+    attention_ui_show_startup_status("Starting secure connection", false);
+    assert(strcmp(lv_label_get_text(s_current_title), "Starting device") == 0);
+    assert(strcmp(lv_label_get_text(s_current_meta), "Starting secure connection") == 0);
+    attention_ui_show_startup_status("Cannot start attention_poll: out of memory", true);
+    assert(strcmp(lv_label_get_text(s_current_title), "Device startup failed") == 0);
+    assert(strcmp(lv_label_get_text(s_current_meta), "Cannot start attention_poll: out of memory") == 0);
     attention_snapshot_t snapshot = { .count = 8, .total_count = 8, .desktop_state_available = true };
     for (unsigned i = 0; i < CONFIG_CODEX_ATTENTION_MAX_ITEMS; ++i) {
         snprintf(snapshot.items[i].id, sizeof(snapshot.items[i].id), "thread-%016u", i);
@@ -81,6 +87,7 @@ int main(void)
         strlcpy(snapshot.items[i].project, "codex-esp32-display", sizeof(snapshot.items[i].project));
     }
     attention_ui_render(&snapshot);
+    assert(strcmp(lv_label_get_text(s_current_title), "Device startup failed") != 0);
     assert_viewport();
     assert(lv_obj_get_height(s_list) == 341);
     settle_scroll();

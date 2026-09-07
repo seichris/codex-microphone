@@ -10,6 +10,8 @@
 #include "button_input.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "freertos/idf_additions.h"
 #include "esp_random.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -40,6 +42,12 @@ typedef struct {
     voice_request_kind_t kind;
     char thread_id[ATTENTION_ID_MAX];
 } voice_request_t;
+
+typedef struct {
+    attention_snapshot_t current;
+    attention_snapshot_t previous_success;
+    attention_snapshot_t fetched;
+} poll_context_t;
 
 static QueueHandle_t s_detail_queue;
 static QueueHandle_t s_voice_queue;
@@ -179,17 +187,14 @@ static void make_request_id(char *output, size_t output_size, const char *prefix
 
 static void poll_task(void *argument)
 {
-    (void)argument;
-    attention_snapshot_t current = { 0 };
-    attention_snapshot_t previous_success = { 0 };
+    poll_context_t *context = argument;
     bool has_previous_success = false;
-    attention_snapshot_t fetched;
 
     while (true) {
         reconcile_wireless_failure();
         if (!wifi_manager_wait_connected(8000)) {
-            strlcpy(current.source_error, "Wi-Fi not connected", sizeof(current.source_error));
-            render_snapshot(&current);
+            strlcpy(context->current.source_error, "Wi-Fi not connected", sizeof(context->current.source_error));
+            render_snapshot(&context->current);
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
@@ -197,16 +202,16 @@ static void poll_task(void *argument)
         reconcile_wireless_failure();
 
         const uint64_t poll_started_at_us = (uint64_t)esp_timer_get_time();
-        esp_err_t result = attention_client_fetch(&fetched);
+        esp_err_t result = attention_client_fetch(&context->fetched);
         bool stopped = false;
         // A fresh attention poll may stop legacy USB dictation, but it must not
         // cancel an acknowledged WSS session whose own stream controls liveness.
         if (!wireless_microphone_has_active_session()) {
             taskENTER_CRITICAL(&s_voice_control_lock);
             stopped = voice_control_stop_from_remote(&s_voice_control, poll_started_at_us,
-                result == ESP_OK && fetched.current_thread.available,
-                result == ESP_OK ? fetched.current_thread.id : NULL,
-                result == ESP_OK ? fetched.current_thread.voice_state : ATTENTION_VOICE_UNKNOWN);
+                result == ESP_OK && context->fetched.current_thread.available,
+                result == ESP_OK ? context->fetched.current_thread.id : NULL,
+                result == ESP_OK ? context->fetched.current_thread.voice_state : ATTENTION_VOICE_UNKNOWN);
             taskEXIT_CRITICAL(&s_voice_control_lock);
             if (stopped) {
                 voice_audio_set_listening(false);
@@ -214,45 +219,45 @@ static void poll_task(void *argument)
             }
         }
         if (result == ESP_OK) {
-            if (has_previous_success && snapshot_should_chime(&previous_success, &fetched)) {
+            if (has_previous_success && snapshot_should_chime(&context->previous_success, &context->fetched)) {
                 attention_audio_notify();
             }
-            current = fetched;
-            previous_success = fetched;
+            context->current = context->fetched;
+            context->previous_success = context->fetched;
             has_previous_success = true;
         } else {
             if (result == ATTENTION_ERR_UNAUTHORIZED) {
-                strlcpy(current.source_error, "Bridge rejected token (HTTP 401)", sizeof(current.source_error));
+                strlcpy(context->current.source_error, "Bridge rejected token (HTTP 401)", sizeof(context->current.source_error));
             } else snprintf(
-                current.source_error,
-                sizeof(current.source_error),
+                context->current.source_error,
+                sizeof(context->current.source_error),
                 "Request failed: %s",
                 esp_err_to_name(result)
             );
-            ESP_LOGW(TAG, "%s", current.source_error);
+            ESP_LOGW(TAG, "%s", context->current.source_error);
         }
-        render_snapshot(&current);
+        render_snapshot(&context->current);
         vTaskDelay(pdMS_TO_TICKS(CONFIG_CODEX_ATTENTION_POLL_INTERVAL_MS));
     }
 }
 
 static void detail_task(void *argument)
 {
-    (void)argument;
+    attention_detail_t *detail = argument;
     detail_request_t request;
 
     while (true) {
         if (xQueueReceive(s_detail_queue, &request, portMAX_DELAY) != pdTRUE) continue;
 
-        attention_detail_t detail = { 0 };
+        memset(detail, 0, sizeof(*detail));
         esp_err_t result;
         if (!wifi_manager_wait_connected(8000)) result = ESP_ERR_TIMEOUT;
-        else result = attention_client_fetch_detail(request.thread_id, &detail);
+        else result = attention_client_fetch_detail(request.thread_id, detail);
 
         bsp_display_lock(0);
         if (attention_ui_is_detail_for(request.thread_id)) {
             if (result == ESP_OK) {
-                attention_ui_render_detail(&detail);
+                attention_ui_render_detail(detail);
             } else {
                 char message[ATTENTION_ERROR_MAX];
                 snprintf(message, sizeof(message), "Could not load latest text: %s", esp_err_to_name(result));
@@ -499,16 +504,31 @@ static void button_task(void *argument)
     }
 }
 
-static void create_task_or_log(
-    TaskFunction_t task,
-    const char *name,
-    uint32_t stack_depth,
-    UBaseType_t priority
-)
+static void show_startup_status(const char *message, bool failed)
 {
-    if (xTaskCreate(task, name, stack_depth, NULL, priority, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "Could not create %s task", name);
-    }
+    bsp_display_lock(0);
+    attention_ui_show_startup_status(message, failed);
+    bsp_display_unlock();
+    ESP_LOGI(TAG, "%s; internal free=%u largest=%u", message,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+}
+
+static bool create_worker(TaskFunction_t task, const char *name, uint32_t stack_depth,
+                          void *argument, UBaseType_t priority, bool external_stack)
+{
+    // Network workers are long-lived and never run with caches disabled. Keep
+    // their stacks in PSRAM; leave the button worker on internal RAM. Tasks
+    // created with caps must use vTaskDeleteWithCaps if teardown is ever added.
+    const BaseType_t result = external_stack
+        ? xTaskCreateWithCaps(task, name, stack_depth, argument, priority, NULL,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+        : xTaskCreate(task, name, stack_depth, argument, priority, NULL);
+    if (result == pdPASS) return true;
+    char message[96];
+    snprintf(message, sizeof(message), "Cannot start %s: out of memory", name);
+    show_startup_status(message, true);
+    return false;
 }
 
 void app_main(void)
@@ -527,19 +547,33 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(bsp_display_backlight_on());
 
-    s_detail_queue = xQueueCreate(1, sizeof(detail_request_t));
-    s_voice_queue = xQueueCreate(4, sizeof(voice_request_t));
-    if (s_detail_queue == NULL || s_voice_queue == NULL) {
-        ESP_LOGE(TAG, "Could not create request queues");
-        return;
-    }
-
     voice_control_init(&s_voice_control);
-
     bsp_display_lock(0);
     attention_ui_init(queue_detail, queue_focus, NULL);
     bsp_display_unlock();
+    show_startup_status("Allocating task memory", false);
 
+    // These single-owner buffers scale with the configured card count and
+    // detail size. They must not live on a task stack or consume internal RAM.
+    poll_context_t *poll = heap_caps_calloc(1, sizeof(*poll), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    attention_detail_t *detail = heap_caps_calloc(1, sizeof(*detail), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (poll == NULL || detail == NULL) {
+        heap_caps_free(poll);
+        heap_caps_free(detail);
+        show_startup_status("Cannot allocate task buffers", true);
+        return;
+    }
+
+    s_detail_queue = xQueueCreate(1, sizeof(detail_request_t));
+    s_voice_queue = xQueueCreate(4, sizeof(voice_request_t));
+    if (s_detail_queue == NULL || s_voice_queue == NULL) {
+        show_startup_status("Cannot allocate request queues", true);
+        heap_caps_free(poll);
+        heap_caps_free(detail);
+        return;
+    }
+
+    show_startup_status("Starting microphone", false);
     ESP_ERROR_CHECK(button_input_init());
     esp_err_t audio_result = voice_audio_init();
     if (audio_result == ESP_OK) {
@@ -554,14 +588,19 @@ void app_main(void)
     if (audio_result != ESP_OK) {
         ESP_LOGW(TAG, "Attention audio disabled: %s", esp_err_to_name(audio_result));
     }
+    show_startup_status("Starting Wi-Fi", false);
     ESP_ERROR_CHECK(wifi_manager_start());
+    show_startup_status("Starting secure connection", false);
     audio_result = wireless_microphone_init();
     if (audio_result != ESP_OK && audio_result != ESP_ERR_INVALID_STATE && audio_result != ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG, "Wireless microphone disabled: %s", esp_err_to_name(audio_result));
     }
 
-    create_task_or_log(poll_task, "attention_poll", 16384, 5);
-    create_task_or_log(detail_task, "attention_detail", 16384, 5);
-    create_task_or_log(voice_task, "desktop_voice", 12288, 6);
-    create_task_or_log(button_task, "attention_buttons", 4096, 6);
+    show_startup_status("Starting task workers", false);
+    if (!create_worker(detail_task, "attention_detail", 8192, detail, 5, true)) return;
+    if (!create_worker(voice_task, "desktop_voice", 12288, NULL, 6, true)) return;
+    if (!create_worker(button_task, "attention_buttons", 4096, NULL, 6, false)) return;
+    // Start polling last so a failed worker cannot leave the initial screen
+    // indefinitely or have its startup error immediately hidden by a poll.
+    (void)create_worker(poll_task, "attention_poll", 8192, poll, 5, true);
 }

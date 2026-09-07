@@ -34,3 +34,6 @@ idf_component_register(
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
+# Network worker frames must leave room for HTTP and LVGL call chains, even
+# with the maximum configured card count. Large models belong in PSRAM.
+set_source_files_properties(main.c PROPERTIES COMPILE_OPTIONS "-Wframe-larger-than=2048;-fstack-usage")

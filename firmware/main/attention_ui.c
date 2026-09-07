@@ -484,6 +484,13 @@ static void create_current_card(void)
     lv_obj_align(s_current_meta, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 }
 
+void attention_ui_show_startup_status(const char *message, bool failed)
+{
+    if (s_current_card == NULL) return;
+    lv_label_set_text(s_current_title, failed ? "Device startup failed" : "Starting device");
+    lv_label_set_text(s_current_meta, message);
+}
+
 static void update_current_card(void)
 {
     if (s_current_card == NULL) return;

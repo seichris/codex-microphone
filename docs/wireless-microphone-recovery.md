@@ -41,6 +41,12 @@ DHCP address clears connection readiness.
 
 ## Diagnosis
 
+- An unchanged initial "Connecting to the Mac" card means no poll has rendered
+  yet; it is not evidence of an empty thread filter. The startup screen now names
+  the current initialization stage and reports buffer/worker allocation failures.
+  Network worker stacks and large snapshot/detail buffers use PSRAM, preserving
+  internal memory for Wi-Fi, TLS, USB, and DMA. Serial startup logs include free
+  internal memory and the largest available block, without configuration secrets.
 - Check that the board and Mac are on mutually reachable LANs. The board's IP
   and the Mac endpoint are different settings. Guest/client isolation prevents
   the board reaching either listener even when both devices have internet.
@@ -89,6 +95,9 @@ environment (or install `esp-idf-kconfig==2.5.4`). It generates synthetic pairin
 material and verifies the path through real Kconfig, C compilation, and PEM
 decoding, plus rotation and certificate naming. No production secrets are used.
 Firmware host tests include Wi-Fi reconnect/DHCP behavior and TLS startup gating.
+The UI test covers visible startup failures. The firmware compiler rejects main
+worker stack frames above 2 KiB, including builds with the maximum 40 cards;
+snapshot and detail sizes must not consume the workers' call-stack budget.
 Run the bridge suite, Swift tests/release build, and the ESP-IDF firmware build
 before deploying changes. Host fixtures do not establish physical radio timing,
 codec behavior, or battery performance.
