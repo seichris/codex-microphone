@@ -8,7 +8,15 @@ final class CodexESP32DisplayAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItemController = StatusItemController(bridge: bridge)
-        if !DictationRecorder.permissionReady { bridge.openVoiceSettings() }
+        let preference = DictationTransportPreference(
+            rawValue: UserDefaults.standard.string(forKey: "VoiceTransport") ?? "auto"
+        ) ?? .auto
+        let wifiPaired = WirelessPairingStore.shared.pairing != nil
+        let usbPermissionRequired = preference == .usb || (preference == .auto && !wifiPaired)
+        if !DictationRecorder.speechPermissionReady || !DictationRecorder.onDeviceAvailable
+            || (usbPermissionRequired && !DictationRecorder.microphonePermissionReady) {
+            bridge.openVoiceSettings()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DesktopControllerClient,
+  mergeDesktopState,
   normalizeDesktopState,
   unavailableDesktopState,
   validOpaqueId,
@@ -20,7 +21,7 @@ test('normalizes Desktop state and fails closed for malformed values', () => {
     threadId: THREAD_ID,
     focusConfidence: 'confirmed',
     voiceState: 'listening',
-    capabilities: { desktopFocus: true, desktopVoiceHotkey: true },
+    capabilities: { desktopFocus: true, desktopVoiceHotkey: true, wirelessMicrophone: true },
   }), {
     available: true,
     threadId: THREAD_ID,
@@ -30,6 +31,14 @@ test('normalizes Desktop state and fails closed for malformed values', () => {
       desktopFocus: true,
       desktopVoiceHotkey: true,
       powerButtonLongPress: false,
+      wirelessMicrophone: true,
+    },
+    wirelessSession: {
+      sessionId: null,
+      transport: null,
+      state: 'idle',
+      revision: 0,
+      errorCode: null,
     },
   });
   assert.equal(normalizeDesktopState({ threadId: 'bad id', voiceState: 'listening' }).threadId, null);
@@ -110,4 +119,53 @@ test('a responding controller with no target does not establish Mac selection', 
   assert.equal(state.focusConfidence, 'unavailable');
   assert.equal(state.voiceState, 'unknown');
   assert.equal(unavailableDesktopState().available, false);
+});
+
+test('normalizes an active wireless session without trusting malformed revisions', () => {
+  const state = normalizeDesktopState({
+    available: true,
+    threadId: THREAD_ID,
+    focusConfidence: 'confirmed',
+    voiceState: 'listening',
+    capabilities: { wirelessMicrophone: true },
+    wirelessSession: {
+      sessionID: 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE',
+      transport: 'wifi',
+      state: 'listening',
+      revision: 9,
+      errorCode: 'capture_timeout',
+    },
+  });
+  assert.deepEqual(state.wirelessSession, {
+    sessionId: 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE',
+    transport: 'wifi',
+    state: 'listening',
+    revision: 9,
+    errorCode: 'capture_timeout',
+  });
+  assert.equal(normalizeDesktopState({ wirelessSession: { revision: -1, state: 'bogus' } }).wirelessSession.revision, 0);
+});
+
+test('does not let an older wireless revision overwrite a newer session', () => {
+  const newer = normalizeDesktopState({
+    available: true,
+    wirelessSession: { sessionID: 'new-session', transport: 'wifi', state: 'listening', revision: 8 },
+  });
+  const older = normalizeDesktopState({
+    available: true,
+    wirelessSession: { sessionID: 'old-session', transport: 'wifi', state: 'idle', revision: 7 },
+  });
+  const merged = mergeDesktopState(newer, older);
+  assert.deepEqual(merged.wirelessSession, newer.wirelessSession);
+  assert.equal(merged.available, true);
+});
+
+test('an unavailable companion clears the last wireless session summary', () => {
+  const active = normalizeDesktopState({
+    available: true,
+    wirelessSession: { sessionID: 'active-session', transport: 'wifi', state: 'listening', revision: 12 },
+  });
+  const merged = mergeDesktopState(active, unavailableDesktopState());
+  assert.equal(merged.available, false);
+  assert.deepEqual(merged.wirelessSession, unavailableDesktopState().wirelessSession);
 });

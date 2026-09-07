@@ -1,10 +1,13 @@
 #include "wifi_manager.h"
 
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_sntp.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -16,6 +19,23 @@ static const char *TAG = "wifi";
 static EventGroupHandle_t s_events;
 static esp_event_handler_instance_t s_wifi_handler;
 static esp_event_handler_instance_t s_ip_handler;
+static bool s_sntp_started;
+
+static void on_time_sync(struct timeval *time_value)
+{
+    (void)time_value;
+    ESP_LOGI(TAG, "Clock synchronized for TLS certificate validation");
+}
+
+static void start_sntp_once(void)
+{
+    if (s_sntp_started) return;
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_set_time_sync_notification_cb(on_time_sync);
+    esp_sntp_init();
+    s_sntp_started = true;
+}
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -29,6 +49,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         ESP_LOGW(TAG, "Disconnected; reconnecting");
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        start_sntp_once();
         xEventGroupSetBits(s_events, WIFI_CONNECTED_BIT);
         ESP_LOGI(TAG, "Connected");
     }

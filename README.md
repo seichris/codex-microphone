@@ -17,8 +17,9 @@ when several reasons apply.
 - **BOOT short press:** highlight the next thread, wrapping at the end.
 - **PWR short press:** open the highlighted thread's latest text.
 - **Either button, held for one second:** focus the selected/detail thread and
-  start device dictation; hold again to finish transcription. Review the text
-  in the Mac companion and choose **Open as Task Draft** before sending it.
+  start device dictation over USB or paired Wi-Fi; hold again to finish
+  transcription. The Mac companion opens the unsent text in that exact task's
+  composer.
 - **PWR on the text screen:** return to the inbox.
 - **BOOT on the text screen:** jump to the next thread and load its latest text.
 - **Touch:** scroll the inbox or text screen; tap a thread card to open it;
@@ -65,6 +66,9 @@ The bridge has no runtime npm dependencies.
 - enumerates as a 48 kHz mono USB microphone and sends silence unless the local
   Voice state is explicitly listening; stops on a fresh non-listening companion
   snapshot and enforces a 60-second limit.
+- supports an authenticated WSS microphone transport for battery-only use, with
+  fixed 20 ms PCM frames, bounded queues, explicit session acknowledgements,
+  and Auto/USB/Wi-Fi source selection. USB and Wi-Fi never share a live session.
 
 ## Architecture
 
@@ -182,6 +186,23 @@ Under **Codex ESP32 Display**, set:
 2. the full attention endpoint printed during bridge setup;
 3. the same bearer token.
 
+For battery-only dictation, generate and import a local pairing bundle in the
+Mac companion, then provision its non-secret endpoint plus certificate and
+credential into the firmware build configuration:
+
+```bash
+scripts/create-wireless-pairing-bundle.sh \
+  --host <mac-lan-ip-or-dns-name> \
+  --output "$HOME/wireless-pairing-CESP32VOICE01.json"
+scripts/provision-wireless-microphone.sh \
+  "$HOME/wireless-pairing-CESP32VOICE01.json" firmware
+```
+
+See [macOS pairing instructions](macos/README.md#pairing-the-wi-fi-microphone)
+for the listener import and `SDKCONFIG_DEFAULTS` build command. Pairing files
+contain private keys and board credentials, are mode 600, and are ignored by
+Git.
+
 Then:
 
 ```bash
@@ -207,8 +228,10 @@ It replaces the bridge LaunchAgent while running and provides bridge status,
 start/stop, the dashboard, endpoint copying, Voice status/settings, and log
 access from its menu. Opening the dashboard from the menu automatically seeds
 its token and clears the URL fragment after the dashboard stores it locally.
-Microphone and Speech Recognition permissions are required for native dictation.
-Audio is transcribed locally and is never saved.
+Speech Recognition permission is required for native dictation. USB mode also
+needs Mac Microphone permission; Wi-Fi mode receives the board's WSS PCM
+directly and does not enumerate a Mac capture device. Audio is transcribed
+locally and is never saved.
 
 ## Attention rules
 
@@ -274,8 +297,9 @@ See [docs/protocol.md](docs/protocol.md) and
 
 ## Security and compatibility
 
-- HTTP plus a bearer token prevents accidental access; it does not encrypt LAN
-  traffic. Use a trusted/private network.
+- HTTP plus a bearer token prevents accidental access to the legacy bridge; it
+  does not encrypt LAN traffic. The wireless microphone uses a separate TLS
+  WebSocket with a per-board credential and certificate/host verification.
 - The bridge-to-companion controller uses a random token and a private
   per-launch temporary directory. Voice commands are idempotent by request ID.
 - Unread state comes from Codex Desktop's internal

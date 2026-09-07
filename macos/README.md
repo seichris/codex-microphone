@@ -18,16 +18,54 @@ status, Voice Settings, and quit.
 
 ## Device dictation
 
-Open **Voice Settings… → Enable Dictation Permissions**. Both Microphone and
-Speech Recognition must be allowed; Accessibility is no longer used for
-recording or draft handoff. On-device English speech recognition must be
-available. The microphone is selected by its full Waveshare USB unique ID;
-the companion never falls back to the Mac's built-in input or changes the
-system default microphone.
+Open **Voice Settings… → Enable Dictation Permissions**. Speech Recognition and
+on-device English recognition are required for both transports. USB mode also
+requires Microphone permission and the exact Waveshare USB device; Wi-Fi mode
+does not depend on `AVCaptureDevice` enumeration or Mac Microphone permission.
+Accessibility is not used for recording or draft handoff. The companion never
+falls back to the Mac's built-in input or changes the system default microphone.
+
+The **Microphone transport** picker supports `Auto`, `USB`, and `Wi-Fi`. Auto
+chooses USB when it is ready and otherwise uses the paired Wi-Fi listener; the
+choice is locked for the duration of a recording. USB insertion/removal cannot
+reroute an active session.
+
+### Pairing the Wi-Fi microphone
+
+The native listener uses a local TLS identity and a distinct 256-bit credential
+per board. Generate a private pairing bundle on the Mac (the output contains a
+private key and must not be committed or shared):
+
+```bash
+scripts/create-wireless-pairing-bundle.sh \
+  --host <mac-lan-ip-or-dns-name> \
+  --output "$HOME/wireless-pairing-CESP32VOICE01.json"
+```
+
+Import that JSON from **Voice Settings… → Import Wi-Fi pairing bundle…**. The
+identity and credential are stored in Keychain; only non-secret metadata is
+kept in preferences. The listener defaults to port 5181 and requires the
+certificate SAN to match the configured host.
+
+Provision the same bundle into the firmware build configuration before
+flashing:
+
+```bash
+scripts/provision-wireless-microphone.sh \
+  "$HOME/wireless-pairing-CESP32VOICE01.json" firmware
+cd firmware
+SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.wireless.defaults" idf.py reconfigure build
+```
+
+The generated `firmware/sdkconfig.wireless.defaults` is mode 600 and ignored
+by Git. It is not included in the application bundle or routine logs. A fresh
+pairing is required after changing the Mac identity, host, or credential.
 
 1. Select a task on the device and hold either button for one second.
-2. Wait for `LISTENING`. That acknowledgement requires a real USB sample buffer
-   from an active capture session, not merely a posted keyboard shortcut.
+2. Wait for `LISTENING`. USB requires a real sample buffer from the exact
+   device; Wi-Fi requires the authenticated WSS session to be armed and the
+   first correctly framed PCM block to arrive. A posted control acknowledgement
+   alone never opens the recorder.
 3. Speak, then hold again. This closes the device PCM gate and calls
    `endAudio()` on the local speech request so transcription can finish.
 4. Completed dictation automatically opens in the recorded task's composer,
@@ -95,6 +133,9 @@ the dashboard's local storage. Rebuild after changing the bridge config.
 
 The previous `com.seichris.codex-esp32-display` LaunchAgent should remain
 unloaded while this app owns port `5180`.
+
+The Wi-Fi microphone listener is owned by this app on port `5181`. It is
+optional: an unpaired or unavailable listener leaves USB behavior intact.
 
 ## Stable local signing
 

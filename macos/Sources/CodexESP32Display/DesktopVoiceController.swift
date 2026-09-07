@@ -16,6 +16,15 @@ private struct DesktopCapabilities: Codable {
     let desktopFocus: Bool
     let desktopVoiceHotkey: Bool
     let powerButtonLongPress: Bool
+    let wirelessMicrophone: Bool
+}
+
+private struct WirelessSessionSummary: Codable {
+    let sessionID: String?
+    let transport: String?
+    let state: String
+    let revision: UInt64
+    let errorCode: String?
 }
 
 private struct DesktopStatePayload: Codable {
@@ -23,6 +32,7 @@ private struct DesktopStatePayload: Codable {
     let focusConfidence: String
     let voiceState: String
     let capabilities: DesktopCapabilities
+    let wirelessSession: WirelessSessionSummary
 }
 
 private struct DesktopIPCResponse: Encodable {
@@ -47,15 +57,19 @@ final class DesktopVoiceController: ObservableObject {
     @Published private(set) var voiceState = "unknown"
     @Published private(set) var lastError: String?
 
-    let dictation = DictationModel()
+    let dictation: DictationModel
     let focusedTask = FocusedTaskObserver()
+    let wirelessServer: WirelessMicrophoneServer
 
     private let fileManager = FileManager.default
     private let root: URL
     private let token: String
     private var timer: Timer?
+    private var wirelessRevision: UInt64 = 0
 
     init() {
+        wirelessServer = WirelessMicrophoneServer()
+        dictation = DictationModel(wirelessServer: wirelessServer)
         root = fileManager.temporaryDirectory
             .appendingPathComponent(
                 "CodexESP32Display-\(ProcessInfo.processInfo.processIdentifier)",
@@ -65,11 +79,38 @@ final class DesktopVoiceController: ObservableObject {
             + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         do {
             try prepareDirectories()
+            wirelessServer.onStart = { [weak self] threadID, sessionID in
+                guard let self else { return false }
+                return await self.acceptWirelessStart(threadID: threadID, sessionID: sessionID)
+            }
+            wirelessServer.onStop = { [weak self] threadID, sessionID, _ in
+                guard let self else { return }
+                await MainActor.run {
+                    guard self.dictation.wirelessSessionID == sessionID else { return }
+                    try? self.dictation.finish(threadId: threadID)
+                }
+            }
+            wirelessServer.onAudioFrame = { [weak dictation] frame in
+                dictation?.appendWirelessFrame(frame)
+            }
+            wirelessServer.onSessionFailure = { [weak self] threadID, sessionID, reason in
+                guard let self else { return }
+                await MainActor.run {
+                    self.dictation.failWirelessSession(threadId: threadID, sessionID: sessionID, message: reason)
+                }
+            }
+            wirelessServer.onStateChange = { [weak self] _ in
+                Task { @MainActor [weak self] in self?.dictation.refreshWirelessReadiness() }
+            }
             dictation.onStateChange = { [weak self] in
                 guard let self else { return }
                 self.voiceState = self.dictation.wireState
                 self.lastError = self.dictation.session.error
+                self.wirelessRevision &+= 1
             }
+            // Pairing is optional during USB-only operation. A missing
+            // identity is surfaced as a setup state, not a launch failure.
+            try? wirelessServer.start()
             timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.drainRequests() }
             }
@@ -78,8 +119,17 @@ final class DesktopVoiceController: ObservableObject {
         }
     }
 
+    private func acceptWirelessStart(threadID: String, sessionID: UUID) async -> Bool {
+        guard currentThreadId == threadID else { return false }
+        do {
+            try await dictation.start(threadId: threadID, transport: .wifi, wirelessSessionID: sessionID)
+            return true
+        } catch { return false }
+    }
+
     deinit {
         timer?.invalidate()
+        wirelessServer.stop()
         try? fileManager.removeItem(at: root)
     }
 
@@ -96,9 +146,22 @@ final class DesktopVoiceController: ObservableObject {
     private var capabilities: DesktopCapabilities {
         DesktopCapabilities(
             desktopFocus: Self.codexURL != nil && Self.deepLinkTemplateIsValid,
-            // Legacy wire name retained for compatibility with the flashed firmware.
-            desktopVoiceHotkey: dictation.ready,
-            powerButtonLongPress: true
+            // Legacy wire name means the old HTTP/USB start path is safe. Do not
+            // advertise it when only the new WSS transport is ready.
+            desktopVoiceHotkey: dictation.usbReady,
+            powerButtonLongPress: true,
+            wirelessMicrophone: wirelessServer.isReady
+        )
+    }
+
+    private var wirelessSessionPayload: WirelessSessionSummary {
+        let sessionID = dictation.wirelessSessionID?.uuidString
+        return WirelessSessionSummary(
+            sessionID: sessionID,
+            transport: sessionID == nil ? nil : "wifi",
+            state: sessionID == nil ? "idle" : dictation.wirelessSessionState,
+            revision: wirelessRevision,
+            errorCode: sessionID == nil ? nil : (dictation.session.error == nil ? nil : "dictation_failed")
         )
     }
 
@@ -107,7 +170,8 @@ final class DesktopVoiceController: ObservableObject {
             threadId: currentThreadId,
             focusConfidence: currentThreadId == nil ? "unavailable" : focusConfidence,
             voiceState: voiceState,
-            capabilities: capabilities
+            capabilities: capabilities,
+            wirelessSession: wirelessSessionPayload
         )
     }
 
@@ -117,7 +181,8 @@ final class DesktopVoiceController: ObservableObject {
             threadId: selection.threadId,
             focusConfidence: selection.status == .confirmed ? "confirmed" : "unavailable",
             voiceState: selection.voiceState(for: dictation.session.threadId, state: dictation.wireState),
-            capabilities: capabilities
+            capabilities: capabilities,
+            wirelessSession: wirelessSessionPayload
         )
     }
 

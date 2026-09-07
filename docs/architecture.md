@@ -5,8 +5,8 @@
 The display is a physical inbox, not a process monitor. Its list is the union of
 threads that are waiting, unread, or pinned. A selected thread can be opened to
 read its latest useful text without marking it read. It also acts as a
-standards-based USB microphone and fail-closed physical controller for Desktop
-Voice.
+standards-based USB microphone and a battery-capable authenticated Wi-Fi
+microphone for Desktop Voice.
 
 ## Sources of truth
 
@@ -21,6 +21,7 @@ Voice.
 | Latest text | `thread/turns/list`, full items, newest first | `thread/read(includeTurns=true)`, then the thread's local rollout file | No |
 | Voice target | Last exact-ID focus accepted by the menu-bar companion | None; shown as inferred | Explicit commands only |
 | Microphone privacy | ESP32 local PCM gate | Silence | Physical long press |
+| Wireless microphone session | Native WSS session UUID/generation and recorder state | Idle/error summary | Physical long press and stop |
 
 ## Bridge components
 
@@ -57,7 +58,10 @@ Voice.
 - opens a configurable exact-thread deep link and sends the user-configured
   Codex Voice hotkey through macOS accessibility APIs;
 - reports focus as inferred until Codex exposes a stable acknowledgement;
-- never receives, stores, or transcribes microphone samples.
+- owns the authenticated native WSS listener and Keychain-backed pairing;
+- receives bounded PCM frames only after the session is armed, then hands them
+  to the shared local Speech recorder; audio is never written to disk or sent
+  through the Node bridge.
 
 ### HTTP bridge
 
@@ -70,15 +74,22 @@ Voice.
 - `POST /api/v1/desktop/focus` — authenticated, idempotent exact-ID focus;
 - `POST /api/v1/desktop/voice` — authenticated, idempotent start/resume or mute.
 
+Desktop responses also carry the optional `wirelessMicrophone` capability and
+monotonic `wirelessSession` summary. The bridge never carries the PCM stream.
+
 ## Firmware components
 
-- `wifi_manager`: Wi-Fi connection and retry state.
+- `wifi_manager`: Wi-Fi connection/retry state and one-time SNTP clock setup
+  required for TLS certificate validity checks.
 - `attention_client`: authenticated list/detail HTTP client with a 64 KiB hard
   response ceiling.
 - `attention_ui`: LVGL list, persistent selection, and scrollable detail view.
 - `button_input`: debounced BOOT/GPIO0 plus AXP2101 PWR short-press polling.
-- `voice_audio`: shared 48 kHz duplex I²S setup and ES7210 privacy gate.
+- `voice_audio`: shared 48 kHz duplex I²S setup, one ES7210 reader, bounded
+  capture ring, source selection, and privacy gate.
 - `usb_microphone`: mono PCM16 USB Audio Class microphone for macOS.
+- `wireless_microphone`: authenticated WSS client, session handshake, bounded
+  PCM framing, acknowledgements, and stop/failure gating.
 - `voice_control`: pure focus-before-voice state transitions.
 - `main`: independent list polling, detail fetching, and button tasks.
 
@@ -116,3 +127,8 @@ behavior still requires verification on the exact board.
   memory use.
 - Desktop control unavailable or wrong task: the ESP32 PCM gate remains closed.
 - Wi-Fi or bridge loss while starting Voice: the PCM gate remains closed.
+- Wireless certificate/credential failure: no task operation or PCM is
+  accepted; USB remains available when selected.
+- Wireless ingress overflow, skipped frame, stale acknowledgement, or stop
+  timeout: capture closes immediately and the partial transcript remains a
+  review-only draft.

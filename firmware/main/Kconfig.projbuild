@@ -33,4 +33,58 @@ config CODEX_ATTENTION_MAX_ITEMS
     range 1 40
     default 20
 
+config CODEX_ATTENTION_WIRELESS_ENABLED
+    bool "Enable paired Wi-Fi microphone"
+    default y
+    help
+        Enable the authenticated WSS microphone client. The client remains
+        inactive until a URI, CA certificate, and pairing credential are
+        provisioned below.
+
+choice CODEX_ATTENTION_VOICE_TRANSPORT
+    prompt "Voice microphone transport"
+    default CODEX_ATTENTION_VOICE_TRANSPORT_AUTO
+
+config CODEX_ATTENTION_VOICE_TRANSPORT_AUTO
+    bool "Auto (USB when present, otherwise Wi-Fi)"
+
+config CODEX_ATTENTION_VOICE_TRANSPORT_USB
+    bool "USB only"
+
+config CODEX_ATTENTION_VOICE_TRANSPORT_WIFI
+    bool "Wi-Fi only"
+endchoice
+
+config CODEX_ATTENTION_WIRELESS_URL
+    string "Wireless microphone WSS URL"
+    default ""
+    help
+        Provisioned wss:// endpoint for the paired Mac listener (normally
+        port 5181). Plain ws:// endpoints are intentionally not accepted.
+
+config CODEX_ATTENTION_WIRELESS_SERVER_NAME
+    string "Wireless microphone TLS server name"
+    default ""
+    help
+        Expected certificate common name for the paired Mac listener. This is
+        checked separately from the network host in the WSS URL.
+
+config CODEX_ATTENTION_WIRELESS_CA_PEM
+    string "Wireless microphone CA certificate (PEM)"
+    default ""
+    help
+        PEM trust root for the local Mac listener. Leave blank to keep the
+        wireless client disabled; never use an insecure TLS fallback.
+
+config CODEX_ATTENTION_WIRELESS_CREDENTIAL
+    string "Wireless microphone credential"
+    default ""
+    help
+        256-bit per-board credential from the pairing bundle. This value is
+        stored in sdkconfig, which is ignored by Git in this repository.
+
+config CODEX_ATTENTION_WIRELESS_DEVICE_ID
+    string "Wireless microphone board ID"
+    default "CESP32VOICE01"
+
 endmenu

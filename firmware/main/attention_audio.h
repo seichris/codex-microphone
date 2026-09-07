@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include "esp_err.h"
 
 /**
@@ -17,3 +18,6 @@ esp_err_t attention_audio_init(void);
  * does not turn into an overlapping or unbounded queue of sounds.
  */
 void attention_audio_notify(void);
+
+/** Suppress queued chimes while voice capture is preparing or finishing. */
+void attention_audio_set_suppressed(bool suppressed);

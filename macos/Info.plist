@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record your Waveshare USB microphone when you start device dictation.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Receive microphone audio from your paired ESP32 over your local network.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Transcribe device dictation locally on this Mac for review in your selected Codex task.</string>
 	<key>LSMinimumSystemVersion</key>

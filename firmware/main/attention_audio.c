@@ -1,6 +1,7 @@
 #include "attention_audio.h"
 
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include "bsp/esp-bsp.h"
 #include "esp_codec_dev.h"
@@ -8,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "voice_audio.h"
 
 #define CHIME_SAMPLE_RATE 48000U
 #define CHIME_FIRST_TONE_HZ 880U
@@ -40,6 +42,7 @@ static const int16_t SINE_TABLE[SINE_TABLE_SIZE] = {
 static esp_codec_dev_handle_t s_speaker;
 static QueueHandle_t s_chime_queue;
 static int16_t s_chime_pcm[CHIME_SAMPLE_COUNT];
+static atomic_bool s_suppressed;
 
 static void fill_tone(int16_t *destination, size_t sample_count, uint32_t frequency_hz)
 {
@@ -76,7 +79,14 @@ static void build_chime(void)
 
 static void play_chime(void)
 {
-    if (s_speaker == NULL) return;
+    // The microphone and speaker share the codec/I2S clock. A queued attention
+    // sound must not open the speaker while a dictation source owns capture.
+    if (s_speaker == NULL || atomic_load(&s_suppressed) || voice_audio_is_listening()) return;
+    if (!voice_audio_try_lock_codec(20)) return;
+    if (atomic_load(&s_suppressed) || voice_audio_is_listening()) {
+        voice_audio_unlock_codec();
+        return;
+    }
 
     esp_codec_dev_sample_info_t format = {
         .bits_per_sample = 16,
@@ -89,6 +99,7 @@ static void play_chime(void)
     int result = esp_codec_dev_open(s_speaker, &format);
     if (result != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "Could not open speaker: %d", result);
+        voice_audio_unlock_codec();
         return;
     }
 
@@ -96,6 +107,16 @@ static void play_chime(void)
     if (result != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "Could not set speaker volume: %d", result);
         (void)esp_codec_dev_close(s_speaker);
+        voice_audio_unlock_codec();
+        return;
+    }
+
+    // A long-press may have opened the capture gate while the speaker was
+    // being configured. Re-check immediately before the blocking write so a
+    // queued notification cannot become microphone crosstalk.
+    if (atomic_load(&s_suppressed) || voice_audio_is_listening()) {
+        (void)esp_codec_dev_close(s_speaker);
+        voice_audio_unlock_codec();
         return;
     }
 
@@ -104,6 +125,7 @@ static void play_chime(void)
         ESP_LOGW(TAG, "Could not play attention chime: %d", result);
     }
     (void)esp_codec_dev_close(s_speaker);
+    voice_audio_unlock_codec();
 }
 
 static void chime_task(void *argument)
@@ -151,8 +173,13 @@ esp_err_t attention_audio_init(void)
 
 void attention_audio_notify(void)
 {
-    if (s_chime_queue == NULL) return;
+    if (s_chime_queue == NULL || atomic_load(&s_suppressed) || voice_audio_is_listening()) return;
 
     const uint8_t request = 1;
     (void)xQueueOverwrite(s_chime_queue, &request);
+}
+
+void attention_audio_set_suppressed(bool suppressed)
+{
+    atomic_store(&s_suppressed, suppressed);
 }

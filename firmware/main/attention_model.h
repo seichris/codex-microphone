@@ -60,6 +60,7 @@ typedef struct {
     bool desktop_focus;
     bool desktop_voice_hotkey;
     bool power_button_long_press;
+    bool wireless_microphone;
 } attention_capabilities_t;
 
 typedef enum {

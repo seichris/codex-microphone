@@ -9,6 +9,7 @@ import { CodexAppServerClient } from './codex-app-server.mjs';
 import {
   DesktopControlError,
   DesktopControllerClient,
+  mergeDesktopState,
   normalizeDesktopState,
   unavailableDesktopState,
 } from './desktop-controller.mjs';
@@ -99,7 +100,7 @@ export class CodexAttentionService extends EventEmitter {
 
   async focusDesktop({ threadId, requestId }) {
     const state = await this.#desktopController.focus(threadId, requestId);
-    this.#desktopControlState = normalizeDesktopState(state);
+    this.#desktopControlState = mergeDesktopState(this.#desktopControlState, state);
     this.#decorateSnapshot();
     this.emit('snapshot', this.#snapshot);
     return this.#desktopResponse(requestId);
@@ -114,7 +115,7 @@ export class CodexAttentionService extends EventEmitter {
       );
     }
     const state = await this.#desktopController.voice(threadId, command, requestId);
-    this.#desktopControlState = normalizeDesktopState(state);
+    this.#desktopControlState = mergeDesktopState(this.#desktopControlState, state);
     this.#decorateSnapshot();
     this.emit('snapshot', this.#snapshot);
     return this.#desktopResponse(requestId);
@@ -335,12 +336,18 @@ export class CodexAttentionService extends EventEmitter {
 
   async #refreshDesktopControlState() {
     try {
-      this.#desktopControlState = normalizeDesktopState(await this.#desktopController.state());
+      this.#desktopControlState = mergeDesktopState(
+        this.#desktopControlState,
+        await this.#desktopController.state(),
+      );
     } catch (error) {
       if (error?.code !== 'desktop_control_unavailable') {
         this.#logger.error(`[bridge] desktop controller: ${error instanceof Error ? error.message : error}`);
       }
-      this.#desktopControlState = unavailableDesktopState();
+      this.#desktopControlState = mergeDesktopState(
+        this.#desktopControlState,
+        unavailableDesktopState(),
+      );
     }
   }
 
@@ -363,6 +370,7 @@ export class CodexAttentionService extends EventEmitter {
       currentThread,
       desktopControlAvailable: state.available,
       capabilities: { ...state.capabilities },
+      wirelessSession: { ...state.wirelessSession },
     };
   }
 
@@ -376,6 +384,7 @@ export class CodexAttentionService extends EventEmitter {
       focusConfidence: state.focusConfidence,
       voiceState: state.voiceState,
       capabilities: { ...state.capabilities },
+      wirelessSession: { ...state.wirelessSession },
     };
   }
 }

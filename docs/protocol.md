@@ -36,7 +36,15 @@ GET /api/v1/attention
   "capabilities": {
     "desktopFocus": true,
     "desktopVoiceHotkey": true,
-    "powerButtonLongPress": true
+    "powerButtonLongPress": true,
+    "wirelessMicrophone": true
+  },
+  "wirelessSession": {
+    "sessionId": null,
+    "transport": null,
+    "state": "idle",
+    "revision": 0,
+    "errorCode": null
   },
   "items": [
     {
@@ -138,6 +146,12 @@ with `desktop_control_unavailable` when it is not running as a child of the
 menu-bar companion. Starting Voice requires a prior focus acknowledgement for
 the same thread ID.
 
+`desktopVoiceHotkey` describes the legacy HTTP/USB start path. It remains false
+when only the WSS microphone is ready, so older firmware cannot mistake a
+wireless-only companion for a usable USB recorder. `wirelessMicrophone` and
+`wirelessSession` are additive v1 fields; consumers must tolerate their absence
+from older companions.
+
 `focusConfidence` is `confirmed`, `inferred`, or `unavailable`. The current
 implementation reports `inferred`: opening the exact-ID deep link succeeded,
 but Codex Desktop does not expose a public selected-task acknowledgement.
@@ -153,6 +167,46 @@ controller, the firmware shows `MAC TASK UNKNOWN` and offers the existing
 list-selection/long-press flow. After an exact-ID focus request it shows
 `VOICE TARGET` for inferred focus; only confirmed evidence allows `CURRENT ON
 MAC`. Recent, pinned and unread IDs are never used to guess Desktop selection.
+
+## Wireless microphone
+
+The wireless transport is a separate authenticated WebSocket application
+protocol, `codex-microphone.v1`, served by the native macOS companion on port
+5181 by default. It is not routed through the bridge's HTTP bearer-token
+endpoints. The board connects with `wss://`, validates the provisioned
+certificate/host, and sends its per-board credential in the first application
+message. The companion rejects unauthenticated operations and closes the
+connection after three seconds without `hello`.
+
+Control messages are bounded UTF-8 JSON objects (maximum 4 KiB) and always carry
+`version: 1`. The handshake is:
+
+```text
+board hello(deviceID, credential)
+companion capabilities(format=48 kHz mono PCM16, maxFrameBytes=1956)
+board start(requestID, threadID, transport=wifi)
+companion prepared(sessionID, generation, format)
+board commit(sessionID, generation)
+companion armed(sessionID, generation)
+board -> binary PCM frames
+companion listening(first sequence), then ack(every five frames)
+board stop(finalSequence)
+companion stopped(finalSequence)
+```
+
+After `prepared`, every session message carries the server-issued UUID and
+connection generation. Request IDs are idempotent only for the same task and
+transport; conflicting reuse fails. Reconnects create a new session and cannot
+replay earlier frames.
+The companion accepts one board connection and one active session at a time.
+
+Each binary message is exactly 1,956 bytes: a 36-byte network-order header
+(`CMIC`, framing version, flags, header length, session UUID, 32-bit sequence,
+and 64-bit first-sample index) followed by 1,920 bytes of signed little-endian
+PCM16. Sequence and sample index start at zero. Unknown flags, malformed
+headers, skipped/duplicate sequences, stale sessions, oversized messages, and
+missing stop acknowledgements fail closed. No silence is synthesized for a
+missing frame.
 
 ## Versioning
 

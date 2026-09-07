@@ -13,6 +13,7 @@ const VOICE_STATES = new Set([
 ]);
 const FOCUS_CONFIDENCES = new Set(['confirmed', 'inferred', 'unavailable']);
 const VOICE_COMMANDS = new Set(['start-or-resume', 'mute']);
+const WIRELESS_STATES = new Set(['idle', 'starting', 'listening', 'stopping', 'error']);
 
 export class DesktopControlError extends Error {
   constructor(code, message = code, statusCode = 503) {
@@ -46,6 +47,14 @@ export function unavailableDesktopState() {
       desktopFocus: false,
       desktopVoiceHotkey: false,
       powerButtonLongPress: false,
+      wirelessMicrophone: false,
+    },
+    wirelessSession: {
+      sessionId: null,
+      transport: null,
+      state: 'idle',
+      revision: 0,
+      errorCode: null,
     },
   };
 }
@@ -61,6 +70,21 @@ export function normalizeDesktopState(value) {
   const capabilities = value.capabilities && typeof value.capabilities === 'object'
     ? value.capabilities
     : {};
+  const wireless = value.wirelessSession && typeof value.wirelessSession === 'object'
+    ? value.wirelessSession
+    : {};
+  const candidateWirelessSessionId = wireless.sessionID ?? wireless.sessionId;
+  const wirelessSessionId = typeof candidateWirelessSessionId === 'string' && candidateWirelessSessionId.length <= 96
+    ? candidateWirelessSessionId
+    : null;
+  const wirelessTransport = wireless.transport === 'wifi' ? 'wifi' : null;
+  const wirelessState = WIRELESS_STATES.has(wireless.state) ? wireless.state : 'idle';
+  const wirelessRevision = Number.isSafeInteger(wireless.revision) && wireless.revision >= 0
+    ? wireless.revision
+    : 0;
+  const wirelessError = typeof wireless.errorCode === 'string' && wireless.errorCode.length <= 64
+    ? wireless.errorCode
+    : null;
   return {
     available: value.available === true,
     threadId,
@@ -70,8 +94,27 @@ export function normalizeDesktopState(value) {
       desktopFocus: capabilities.desktopFocus === true,
       desktopVoiceHotkey: capabilities.desktopVoiceHotkey === true,
       powerButtonLongPress: capabilities.powerButtonLongPress === true,
+      wirelessMicrophone: capabilities.wirelessMicrophone === true,
+    },
+    wirelessSession: {
+      sessionId: wirelessSessionId,
+      transport: wirelessTransport,
+      state: wirelessState,
+      revision: wirelessRevision,
+      errorCode: wirelessError,
     },
   };
+}
+
+// The companion's state file can be observed out of order around an IPC
+// request. Never let a lower wireless revision erase a newer session summary.
+export function mergeDesktopState(previous, next) {
+  const oldState = normalizeDesktopState(previous);
+  const newState = normalizeDesktopState(next);
+  if (newState.available && newState.wirelessSession.revision < oldState.wirelessSession.revision) {
+    return { ...newState, wirelessSession: { ...oldState.wirelessSession } };
+  }
+  return newState;
 }
 
 function delay(milliseconds) {

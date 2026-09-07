@@ -14,6 +14,8 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/dependencies.lock
 firmware/managed_components/
+firmware/sdkconfig.wireless.defaults
+firmware/.sdkconfig.wireless.defaults.*
 
 # Logs
 *.log
@@ -24,3 +26,7 @@ macos/build/
 
 # Local certificate selection for stable development signing
 macos/.signing-identity
+
+# Wireless pairing bundles contain TLS private keys and board credentials.
+wireless-pairing*.json
+*.p12

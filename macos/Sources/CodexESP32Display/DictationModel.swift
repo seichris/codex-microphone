@@ -14,17 +14,49 @@ final class DictationModel: ObservableObject {
     @Published private(set) var permissionRevision = 0
     var onStateChange: (() -> Void)?
     private let recorder = DictationRecorder()
+    private let wirelessServer: WirelessMicrophoneServer?
     private var window: NSWindow?
     private let openDraftLink: @MainActor (URL) async throws -> Void
 
     init(session: DictationSession = DictationSession(),
+         wirelessServer: WirelessMicrophoneServer? = nil,
          openDraftLink: @escaping @MainActor (URL) async throws -> Void = CodexAppLink.open) {
         self.session = session
         self.draftText = session.text
+        self.wirelessServer = wirelessServer
         self.openDraftLink = openDraftLink
     }
 
-    var ready: Bool { DictationRecorder.permissionReady && DictationRecorder.device != nil && DictationRecorder.onDeviceAvailable }
+    var usbReady: Bool {
+        DictationRecorder.permissionReady && DictationRecorder.device != nil && DictationRecorder.onDeviceAvailable
+    }
+    var wirelessReady: Bool {
+        DictationRecorder.speechPermissionReady && DictationRecorder.onDeviceAvailable && wirelessServer?.isReady == true
+    }
+    var wirelessPairingConfigured: Bool { wirelessServer?.configurationPairing != nil }
+    var wirelessReadinessTitle: String {
+        if wirelessReady { return "Wi-Fi microphone listener ready" }
+        return wirelessPairingConfigured ? "Wi-Fi pairing imported; listener unavailable" : "Wi-Fi microphone not paired"
+    }
+    var transportPreference: DictationTransportPreference {
+        DictationTransportPreference(rawValue: UserDefaults.standard.string(forKey: "VoiceTransport") ?? "auto") ?? .auto
+    }
+    var activeTransport: DictationTransport? { session.isBusy ? sessionTransport : nil }
+    var wirelessSessionID: UUID? {
+        guard sessionTransport == .wifi, session.phase != .idle, session.phase != .draft else { return nil }
+        return wirelessSessionIdentifier
+    }
+    var wirelessSessionState: String {
+        guard sessionTransport == .wifi else { return "idle" }
+        switch session.phase {
+        case .starting: return "starting"
+        case .recording: return "listening"
+        case .transcribing: return "stopping"
+        case .error: return "error"
+        default: return "idle"
+        }
+    }
+    var ready: Bool { transportPreference.resolve(usbReady: usbReady, wifiReady: wirelessReady) != nil }
     var wireState: String {
         switch session.phase {
         case .idle, .draft: return "ready"
@@ -36,9 +68,11 @@ final class DictationModel: ObservableObject {
     }
     var status: String {
         switch session.phase {
-        case .idle: return ready ? "Dictation ready" : "Dictation needs setup"
-        case .starting: return "Starting Waveshare microphone"
-        case .recording: return "Recording from Waveshare"
+        case .idle:
+            if transportPreference == .wifi && !wirelessReady { return "Pair the board for Wi-Fi dictation" }
+            return ready ? "Dictation ready" : "Dictation needs setup"
+        case .starting: return sessionTransport == .wifi ? "Starting Wi-Fi microphone" : "Starting Waveshare microphone"
+        case .recording: return sessionTransport == .wifi ? "Recording over Wi-Fi" : "Recording from Waveshare"
         case .transcribing: return "Finishing transcription"
         case .draft: return "Dictation draft ready"
         case .error: return session.error ?? "Dictation failed"
@@ -54,11 +88,51 @@ final class DictationModel: ObservableObject {
         onStateChange?()
     }
 
+    func importWirelessPairing(_ data: Data) throws {
+        guard let wirelessServer else { throw WirelessMicrophoneServerError.pairingNotConfigured }
+        _ = try wirelessServer.importPairingBundle(data)
+        try wirelessServer.start()
+        permissionRevision += 1
+        onStateChange?()
+    }
+
+    func removeWirelessPairing() {
+        wirelessServer?.removePairing()
+        permissionRevision += 1
+        onStateChange?()
+    }
+
+    /// Wake Voice Settings when the listener moves between starting, ready,
+    /// and failed states without changing the dictation session itself.
+    func refreshWirelessReadiness() {
+        permissionRevision += 1
+        onStateChange?()
+    }
+
+    private var sessionTransport: DictationTransport = .usb
+    // The board's server-issued session UUID is distinct from the local
+    // DictationSession generation UUID used to reject late Speech callbacks.
+    private var wirelessSessionIdentifier: UUID?
+
     func start(threadId: String) async throws {
+        guard let transport = transportPreference.resolve(usbReady: usbReady, wifiReady: wirelessReady) else {
+            throw DictationError.message("No selected microphone transport is ready. Connect USB or pair the board for Wi-Fi.")
+        }
+        guard transport == .usb else {
+            throw DictationError.message("Wi-Fi dictation is started by the paired board.")
+        }
+        try await start(threadId: threadId, transport: transport, wirelessSessionID: nil)
+    }
+
+    func start(threadId: String, transport: DictationTransport, wirelessSessionID: UUID? = nil) async throws {
         guard UUID(uuidString: threadId) != nil else { throw DictationError.message("Dictation requires a local Codex task ID.") }
         guard !isOpeningDraft else { throw DictationError.message("Wait for the current dictation to finish opening in Codex.") }
         guard !session.isBusy else { throw DictationError.message("Finish the current dictation before starting another one.") }
-        guard ready else { throw DictationError.message("Open Voice Settings and enable Microphone and Speech Recognition, then connect the board by USB.") }
+        guard transport == .usb ? usbReady : (wirelessReady && wirelessSessionID != nil) else {
+            throw DictationError.message(transport == .usb
+                ? "Open Voice Settings and enable Microphone and Speech Recognition, then connect the board by USB."
+                : "Pair the board, allow Speech Recognition, and confirm the Mac listener is ready.")
+        }
         // A successful handoff clears this automatically. If a handoff failed,
         // starting a new device recording is the explicit replacement action now
         // that the review window has no Discard button.
@@ -67,6 +141,8 @@ final class DictationModel: ObservableObject {
             draftText = ""
         }
         let id = try session.begin(threadId: threadId)
+        sessionTransport = transport
+        wirelessSessionIdentifier = transport == .wifi ? wirelessSessionID : nil
         handoffMessage = nil
         draftText = ""
         // Keep the editable review window out of the way while the device is
@@ -76,10 +152,10 @@ final class DictationModel: ObservableObject {
         DictationRecordingOverlayController.shared.show(model: self)
         onStateChange?()
         do {
-            try await recorder.start(id: id) { [weak self] event in
+            try await recorder.start(id: id, transport: transport, wirelessSessionID: wirelessSessionID) { [weak self] event in
                 Task { @MainActor [weak self] in self?.handle(id: id, event: event) }
             }
-            session.recording(id)
+            if transport == .usb { session.recording(id) }
             onStateChange?()
         } catch {
             session.fail(id, error.localizedDescription)
@@ -93,20 +169,41 @@ final class DictationModel: ObservableObject {
     func finish(threadId: String) throws {
         guard session.threadId == threadId else { throw DictationError.message("This recording belongs to a different task.") }
         if let id = session.id, session.isBusy {
+            if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
             session.finishing(id)
             recorder.finish()
             onStateChange?()
         }
     }
 
+    func failWirelessSession(threadId: String, sessionID: UUID, message: String) {
+        guard session.threadId == threadId,
+              sessionTransport == .wifi,
+              wirelessSessionIdentifier == sessionID,
+              session.isBusy else { return }
+        recorder.cancel(message: message)
+    }
+
+    /// Network callbacks call this through the recorder's private serial queue;
+    /// no actor/UI state is touched here.
+    nonisolated func appendWirelessFrame(_ frame: WirelessMicrophoneProtocol.AudioFrame) {
+        recorder.appendWirelessFrame(frame)
+    }
+
     func handle(id: UUID, event: DictationRecorder.Event) {
         guard session.id == id else { return }
         let previousPhase = session.phase
         switch event {
+        case .prepared:
+            // Wi-Fi start is acknowledged when the Speech receiver is ready;
+            // the first validated PCM frame transitions the visible session to
+            // recording/listening.
+            DictationRecordingOverlayController.shared.show(model: self)
         case .recording:
             session.recording(id)
             DictationRecordingOverlayController.shared.show(model: self)
         case .finishing:
+            if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
             session.finishing(id)
             DictationRecordingOverlayController.shared.show(model: self)
         case let .transcript(text, final):
@@ -118,6 +215,9 @@ final class DictationModel: ObservableObject {
             }
             draftText = session.text
             if final {
+                // Speech can finish naturally without a preceding finish event.
+                // Stop the board stream before handing off or clearing its ID.
+                if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
                 level = 0
                 DictationRecordingOverlayController.shared.hide()
                 // update rejects terminal callbacks, so only the first completed
@@ -128,6 +228,7 @@ final class DictationModel: ObservableObject {
                 else { showWindow() }
             }
         case let .failed(message):
+            if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
             session.fail(id, message)
             level = 0
             DictationRecordingOverlayController.shared.hide()
@@ -159,6 +260,8 @@ final class DictationModel: ObservableObject {
                 // hidden draft behind that would block the next recording.
                 session.discard()
                 draftText = ""
+                sessionTransport = .usb
+                wirelessSessionIdentifier = nil
                 handoffMessage = nil
                 window?.orderOut(nil)
                 onStateChange?()

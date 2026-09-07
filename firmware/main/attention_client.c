@@ -146,6 +146,7 @@ static void parse_capabilities(const cJSON *object, attention_capabilities_t *ca
     capabilities->desktop_focus = json_bool(object, "desktopFocus");
     capabilities->desktop_voice_hotkey = json_bool(object, "desktopVoiceHotkey");
     capabilities->power_button_long_press = json_bool(object, "powerButtonLongPress");
+    capabilities->wireless_microphone = json_bool(object, "wirelessMicrophone");
 }
 
 static esp_err_t perform_get(const char *url, response_buffer_t *response)

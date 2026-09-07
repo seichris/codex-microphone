@@ -21,6 +21,7 @@
 #include "usb_microphone.h"
 #include "voice_audio.h"
 #include "voice_control.h"
+#include "wireless_microphone.h"
 #include "esp_timer.h"
 
 static const char *TAG = "codex_display";
@@ -44,6 +45,19 @@ static QueueHandle_t s_detail_queue;
 static QueueHandle_t s_voice_queue;
 static voice_control_t s_voice_control;
 static portMUX_TYPE s_voice_control_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static bool should_use_wireless_transport(void)
+{
+#if CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_WIFI
+    return wireless_microphone_is_ready();
+#elif CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_USB
+    return false;
+#else
+    // Auto uses the USB endpoint while a host is actively requesting samples;
+    // a battery-only board has no such request and can use its paired WSS link.
+    return !usb_microphone_host_active() && wireless_microphone_is_ready();
+#endif
+}
 
 static uint8_t attention_reason_mask(const attention_item_t *item)
 {
@@ -132,6 +146,25 @@ static void set_voice_ui(const char *thread_id, attention_voice_state_t state)
     bsp_display_unlock();
 }
 
+static void reconcile_wireless_failure(void)
+{
+    if (!wireless_microphone_has_failed()) return;
+
+    char thread_id[ATTENTION_ID_MAX] = { 0 };
+    bool should_show_error = false;
+    taskENTER_CRITICAL(&s_voice_control_lock);
+    if (s_voice_control.state == ATTENTION_VOICE_STARTING
+        || s_voice_control.state == ATTENTION_VOICE_LISTENING) {
+        strlcpy(thread_id, s_voice_control.thread_id, sizeof(thread_id));
+        voice_control_voice_result(&s_voice_control, false, false);
+        should_show_error = thread_id[0] != '\0';
+    }
+    taskEXIT_CRITICAL(&s_voice_control_lock);
+    voice_audio_set_listening(false);
+    attention_audio_set_suppressed(false);
+    if (should_show_error) set_voice_ui(thread_id, ATTENTION_VOICE_ERROR);
+}
+
 static void make_request_id(char *output, size_t output_size, const char *prefix)
 {
     snprintf(
@@ -153,6 +186,7 @@ static void poll_task(void *argument)
     attention_snapshot_t fetched;
 
     while (true) {
+        reconcile_wireless_failure();
         if (!wifi_manager_wait_connected(8000)) {
             strlcpy(current.source_error, "Wi-Fi not connected", sizeof(current.source_error));
             render_snapshot(&current);
@@ -160,15 +194,25 @@ static void poll_task(void *argument)
             continue;
         }
 
+        reconcile_wireless_failure();
+
         const uint64_t poll_started_at_us = (uint64_t)esp_timer_get_time();
         esp_err_t result = attention_client_fetch(&fetched);
-        taskENTER_CRITICAL(&s_voice_control_lock);
-        const bool stopped = voice_control_stop_from_remote(&s_voice_control, poll_started_at_us,
-            result == ESP_OK && fetched.current_thread.available,
-            result == ESP_OK ? fetched.current_thread.id : NULL,
-            result == ESP_OK ? fetched.current_thread.voice_state : ATTENTION_VOICE_UNKNOWN);
-        if (stopped) voice_audio_set_listening(false);
-        taskEXIT_CRITICAL(&s_voice_control_lock);
+        bool stopped = false;
+        // A fresh attention poll may stop legacy USB dictation, but it must not
+        // cancel an acknowledged WSS session whose own stream controls liveness.
+        if (!wireless_microphone_has_active_session()) {
+            taskENTER_CRITICAL(&s_voice_control_lock);
+            stopped = voice_control_stop_from_remote(&s_voice_control, poll_started_at_us,
+                result == ESP_OK && fetched.current_thread.available,
+                result == ESP_OK ? fetched.current_thread.id : NULL,
+                result == ESP_OK ? fetched.current_thread.voice_state : ATTENTION_VOICE_UNKNOWN);
+            taskEXIT_CRITICAL(&s_voice_control_lock);
+            if (stopped) {
+                voice_audio_set_listening(false);
+                attention_audio_set_suppressed(false);
+            }
+        }
         if (result == ESP_OK) {
             if (has_previous_success && snapshot_should_chime(&previous_success, &fetched)) {
                 attention_audio_notify();
@@ -226,6 +270,7 @@ static void voice_task(void *argument)
         if (xQueueReceive(s_voice_queue, &request, portMAX_DELAY) != pdTRUE) continue;
         if (!wifi_manager_wait_connected(8000)) {
             voice_audio_set_listening(false);
+            attention_audio_set_suppressed(false);
             set_voice_ui(request.thread_id, ATTENTION_VOICE_ERROR);
             continue;
         }
@@ -233,6 +278,7 @@ static void voice_task(void *argument)
         char request_id[97];
         attention_desktop_state_t response = { 0 };
         if (request.kind == VOICE_REQUEST_FOCUS) {
+            attention_audio_set_suppressed(true);
             set_voice_ui(request.thread_id, ATTENTION_VOICE_FOCUSING);
             make_request_id(request_id, sizeof(request_id), "focus");
             esp_err_t result = attention_client_focus(request.thread_id, request_id, &response);
@@ -244,11 +290,19 @@ static void voice_task(void *argument)
                 attention_ui_set_voice_state(request.thread_id, ATTENTION_VOICE_ERROR);
                 bsp_display_unlock();
             }
+            attention_audio_set_suppressed(false);
             continue;
         }
 
         if (request.kind == VOICE_REQUEST_MUTE) {
             set_voice_ui(request.thread_id, ATTENTION_VOICE_MUTED);
+            if (wireless_microphone_has_active_session()) {
+                if (wireless_microphone_stop_session() != ESP_OK) {
+                    set_voice_ui(request.thread_id, ATTENTION_VOICE_ERROR);
+                }
+                attention_audio_set_suppressed(false);
+                continue;
+            }
             make_request_id(request_id, sizeof(request_id), "mute");
             esp_err_t result = attention_client_voice(
                 request.thread_id,
@@ -259,6 +313,7 @@ static void voice_task(void *argument)
             if (result != ESP_OK) {
                 ESP_LOGW(TAG, "Desktop mute acknowledgement failed: %s", esp_err_to_name(result));
             }
+            attention_audio_set_suppressed(false);
             continue;
         }
 
@@ -276,10 +331,12 @@ static void voice_task(void *argument)
         taskEXIT_CRITICAL(&s_voice_control_lock);
         if (action != VOICE_CONTROL_ACTION_START) {
             voice_audio_set_listening(false);
+            attention_audio_set_suppressed(false);
             if (!cancelled) set_voice_ui(request.thread_id, ATTENTION_VOICE_ERROR);
             continue;
         }
 
+        attention_audio_set_suppressed(true);
         set_voice_ui(request.thread_id, ATTENTION_VOICE_STARTING);
         // Give the Desktop deep link a bounded moment to finish switching tasks
         // before sending the global Voice shortcut.
@@ -288,7 +345,46 @@ static void voice_task(void *argument)
         const bool should_start = s_voice_control.state == ATTENTION_VOICE_STARTING
             && strcmp(s_voice_control.thread_id, request.thread_id) == 0;
         taskEXIT_CRITICAL(&s_voice_control_lock);
-        if (!should_start) continue;
+        if (!should_start) {
+            attention_audio_set_suppressed(false);
+            continue;
+        }
+
+        if (should_use_wireless_transport()) {
+            make_request_id(request_id, sizeof(request_id), "wireless");
+            const esp_err_t wireless_result = wireless_microphone_start_session(
+                request.thread_id, request_id
+            );
+            taskENTER_CRITICAL(&s_voice_control_lock);
+            const bool wireless_still_requested = s_voice_control.state == ATTENTION_VOICE_STARTING
+                && strcmp(s_voice_control.thread_id, request.thread_id) == 0;
+            if (wireless_still_requested) {
+                voice_control_voice_result(&s_voice_control, wireless_result == ESP_OK, wireless_result == ESP_OK);
+                if (wireless_result == ESP_OK) {
+                    s_voice_control.recording_started_at_us = (uint64_t)esp_timer_get_time();
+                }
+            }
+            taskEXIT_CRITICAL(&s_voice_control_lock);
+            set_voice_ui(
+                request.thread_id,
+                wireless_still_requested
+                    ? (wireless_result == ESP_OK ? ATTENTION_VOICE_LISTENING : ATTENTION_VOICE_ERROR)
+                    : ATTENTION_VOICE_MUTED
+            );
+            if (wireless_result != ESP_OK || !wireless_still_requested) {
+                attention_audio_set_suppressed(false);
+            }
+            continue;
+        }
+
+#if CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_WIFI
+        // Wi-Fi-only is an explicit choice. Never silently route it through
+        // the legacy USB HTTP path when the paired listener is unavailable.
+        set_voice_ui(request.thread_id, ATTENTION_VOICE_ERROR);
+        attention_audio_set_suppressed(false);
+        continue;
+#endif
+
         make_request_id(request_id, sizeof(request_id), "voice");
         memset(&response, 0, sizeof(response));
         result = attention_client_voice(
@@ -308,8 +404,9 @@ static void voice_task(void *argument)
             voice_control_voice_result(&s_voice_control, acknowledged, acknowledged);
             if (acknowledged) s_voice_control.recording_started_at_us = (uint64_t)esp_timer_get_time();
         }
-        voice_audio_set_listening(acknowledged && still_requested);
         taskEXIT_CRITICAL(&s_voice_control_lock);
+        voice_audio_set_listening(acknowledged && still_requested);
+        if (!acknowledged || !still_requested) attention_audio_set_suppressed(false);
         set_voice_ui(
             request.thread_id,
             still_requested
@@ -325,19 +422,26 @@ static void button_task(void *argument)
     button_input_event_t event;
 
     while (true) {
+        reconcile_wireless_failure();
         char expired_thread[ATTENTION_ID_MAX] = { 0 };
         taskENTER_CRITICAL(&s_voice_control_lock);
         if (voice_control_expire(&s_voice_control, (uint64_t)esp_timer_get_time())) {
-            voice_audio_set_listening(false);
             strlcpy(expired_thread, s_voice_control.thread_id, sizeof(expired_thread));
         }
         taskEXIT_CRITICAL(&s_voice_control_lock);
-        if (expired_thread[0] != '\0') set_voice_ui(expired_thread, ATTENTION_VOICE_MUTED);
+        if (expired_thread[0] != '\0') {
+            voice_audio_set_listening(false);
+            attention_audio_set_suppressed(false);
+            set_voice_ui(expired_thread, ATTENTION_VOICE_MUTED);
+        }
         if (!button_input_poll(&event)) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
+        bool stop_wireless_after_unlock = false;
+        bool queue_voice_request = false;
+        voice_request_t queued_voice_request = { 0 };
         bsp_display_lock(0);
         if (event == BUTTON_INPUT_BOOT_SHORT) {
             if (attention_ui_is_settings_visible()) {
@@ -356,32 +460,40 @@ static void button_task(void *argument)
         } else if (event == BUTTON_INPUT_BOOT_LONG || event == BUTTON_INPUT_PWR_LONG) {
             char thread_id[ATTENTION_ID_MAX];
             if (attention_ui_get_voice_target_id(thread_id, sizeof(thread_id))) {
-                const bool audio_was_listening = voice_audio_is_listening();
-                if (audio_was_listening) {
-                    // Privacy boundary: close the PCM gate before muting this task
-                    // or switching Voice to another selected task.
-                    voice_audio_set_listening(false);
-                }
+                const bool wireless_active = wireless_microphone_has_active_session();
+                // Privacy boundary: close the PCM gate before muting this task
+                // or switching Voice to another selected task. The network
+                // stop is deferred until after the display lock is released.
+                voice_audio_set_listening(false);
                 taskENTER_CRITICAL(&s_voice_control_lock);
                 const voice_control_action_t action = voice_control_begin_toggle(
                     &s_voice_control,
                     thread_id
                 );
-                voice_audio_set_listening(false);
                 taskEXIT_CRITICAL(&s_voice_control_lock);
                 if (action == VOICE_CONTROL_ACTION_MUTE) {
                     attention_ui_set_voice_state(thread_id, ATTENTION_VOICE_MUTED);
                 }
-                voice_request_t request = {
+                queued_voice_request = (voice_request_t){
                     .kind = action == VOICE_CONTROL_ACTION_MUTE
                         ? VOICE_REQUEST_MUTE
                         : VOICE_REQUEST_START,
                 };
-                strlcpy(request.thread_id, thread_id, sizeof(request.thread_id));
-                (void)xQueueSend(s_voice_queue, &request, 0);
+                strlcpy(queued_voice_request.thread_id, thread_id, sizeof(queued_voice_request.thread_id));
+                stop_wireless_after_unlock = wireless_active;
+                queue_voice_request = true;
             }
         }
         bsp_display_unlock();
+        if (stop_wireless_after_unlock) {
+            const esp_err_t stop_result = wireless_microphone_stop_session();
+            attention_audio_set_suppressed(false);
+            queue_voice_request = false;
+            if (stop_result != ESP_OK) {
+                set_voice_ui(queued_voice_request.thread_id, ATTENTION_VOICE_ERROR);
+            }
+        }
+        if (queue_voice_request) (void)xQueueSend(s_voice_queue, &queued_voice_request, 0);
     }
 }
 
@@ -441,6 +553,10 @@ void app_main(void)
         ESP_LOGW(TAG, "Attention audio disabled: %s", esp_err_to_name(audio_result));
     }
     ESP_ERROR_CHECK(wifi_manager_start());
+    audio_result = wireless_microphone_init();
+    if (audio_result != ESP_OK && audio_result != ESP_ERR_INVALID_STATE && audio_result != ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "Wireless microphone disabled: %s", esp_err_to_name(audio_result));
+    }
 
     create_task_or_log(poll_task, "attention_poll", 16384, 5);
     create_task_or_log(detail_task, "attention_detail", 16384, 5);

@@ -10,6 +10,8 @@ idf_component_register(
         "button_input.c"
         "voice_audio.c"
         "usb_microphone.c"
+        "wireless_microphone_protocol.c"
+        "wireless_microphone.c"
         "voice_control.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_timer
@@ -21,7 +23,9 @@ idf_component_register(
         esp_codec_dev
         esp_http_client
         esp_netif
+        lwip
         esp_wifi
+        esp_websocket_client
         json
         nvs_flash
         usb_device_uac
