@@ -54,6 +54,7 @@ umask 077
   printf '# Generated from a wireless pairing bundle; do not commit.\n'
   printf 'CONFIG_CODEX_ATTENTION_WIRELESS_ENABLED=y\n'
   printf 'CONFIG_MBEDTLS_HAVE_TIME_DATE=y\n'
+  printf 'CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y\n'
   printf 'CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_AUTO=y\n'
   printf 'CONFIG_CODEX_ATTENTION_WIRELESS_DEVICE_ID=%s\n' "$(json_string boardID)"
   printf 'CONFIG_CODEX_ATTENTION_WIRELESS_URL=%s\n' "$(printf '%s' "$URL" | jq -Rr @json)"

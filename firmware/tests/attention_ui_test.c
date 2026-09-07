@@ -73,6 +73,10 @@ int main(void)
     lv_display_set_buffers(display, draw_buffer, NULL, sizeof(draw_buffer), LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(display, flush);
     attention_ui_init(NULL, NULL, NULL);
+    attention_ui_set_wireless_status("Wi-Fi mic: TLS -32512 / ESP 32769 / HTTP 0");
+    assert(strcmp(lv_label_get_text(s_wireless_status), "Wi-Fi mic: TLS -32512 / ESP 32769 / HTTP 0") == 0);
+    lv_obj_update_layout(lv_screen_active());
+    assert(area(s_wireless_status).y2 < 94);
     attention_ui_show_startup_status("Starting secure connection", false);
     assert(strcmp(lv_label_get_text(s_current_title), "Starting device") == 0);
     assert(strcmp(lv_label_get_text(s_current_meta), "Starting secure connection") == 0);

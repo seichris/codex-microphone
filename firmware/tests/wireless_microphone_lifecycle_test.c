@@ -27,6 +27,7 @@ static cJSON *fixture;
 static jmp_buf stream_exit;
 
 bool wifi_manager_wait_connected(uint32_t timeout_ms) { (void)timeout_ms; return wifi_ready; }
+bool wifi_manager_is_connected(void) { return wifi_ready; }
 static char *copy_string(const char *s) { size_t n = strlen(s) + 1; char *p = malloc(n); assert(p); memcpy(p, s, n); return p; }
 size_t strlcpy(char *dst, const char *src, size_t cap) { size_t n = strlen(src); if (cap) { size_t m = n < cap - 1 ? n : cap - 1; memcpy(dst, src, m); dst[m] = 0; } return n; }
 cJSON *cJSON_CreateObject(void) { cJSON *v = calloc(1, sizeof(*v)); assert(v); v->type = 1; return v; }
@@ -111,6 +112,24 @@ static void setup(void) {
 }
 static void stream_once(void) { if (setjmp(stream_exit) == 0) stream_task(NULL); }
 int main(void) {
+    setup();
+    char status[112];
+    const esp_websocket_event_data_t failed_tls = { .error_handle = {
+        .esp_tls_stack_err = -32512, .esp_tls_last_esp_err = 32769,
+    } };
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_ERROR, (void *)&failed_tls);
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "TLS -32512 / ESP 32769 / HTTP 0"));
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_DISCONNECTED, NULL);
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "TLS -32512"));
+    s_connected = true; s_authenticated = true;
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strcmp(status, "Wi-Fi mic: connected and paired") == 0);
+    char bounded[8];
+    wireless_microphone_get_status(bounded, sizeof(bounded));
+    assert(bounded[7] == '\0');
+    puts("PASS connection diagnostics retain TLS error across disconnect and report paired readiness");
     setup(); wifi_ready = false;
     if (setjmp(stream_exit) == 0) connection_task(NULL);
     assert(websocket_starts == 0);

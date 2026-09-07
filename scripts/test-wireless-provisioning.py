@@ -25,6 +25,7 @@ with tempfile.TemporaryDirectory(prefix="wireless-provision-test-") as directory
     assert "DNS:microphone.test" in run("openssl", "x509", "-in", str(certificate), "-noout", "-text")
     config = tmp / "sdkconfig"
     config.write_text('CONFIG_CODEX_ATTENTION_WIFI_SSID="preserved"\n'
+                      'CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y\n'
                       'CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN="preserved-token"\n'
                       'CONFIG_CODEX_ATTENTION_WIRELESS_CREDENTIAL="old"\n'
                       '# CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_AUTO is not set\n'
@@ -32,6 +33,8 @@ with tempfile.TemporaryDirectory(prefix="wireless-provision-test-") as directory
     run("bash", str(ROOT / "scripts/provision-wireless-microphone.sh"), str(bundle), str(tmp))
     assert 'CONFIG_CODEX_ATTENTION_WIFI_SSID="preserved"' in config.read_text()
     assert 'CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN="preserved-token"' in config.read_text()
+    assert 'CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y' in config.read_text()
+    assert 'CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y' not in config.read_text()
     assert config.stat().st_mode & 0o777 == 0o600
     kconfig = kconfiglib.Kconfig(str(ROOT / "firmware/main/Kconfig.projbuild"), warn=False)
     kconfig.load_config(str(config))

@@ -23,9 +23,14 @@ typedef struct {
     int buffer_size, task_stack;
 } esp_websocket_client_config_t;
 typedef struct {
+    int esp_tls_last_esp_err, esp_tls_stack_err, esp_tls_cert_verify_flags;
+    int error_type, esp_ws_handshake_status_code, esp_transport_sock_errno;
+} esp_websocket_error_codes_t;
+typedef struct {
     const char *data_ptr;
     int data_len, payload_len, payload_offset, op_code;
     bool fin;
+    esp_websocket_error_codes_t error_handle;
 } esp_websocket_event_data_t;
 enum { WEBSOCKET_EVENT_ANY, WEBSOCKET_EVENT_CONNECTED, WEBSOCKET_EVENT_DISCONNECTED,
        WEBSOCKET_EVENT_CLOSED, WEBSOCKET_EVENT_ERROR, WEBSOCKET_EVENT_DATA };

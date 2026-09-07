@@ -15,6 +15,9 @@ def update(defaults: Path, target: Path) -> None:
     settings = [line for line in defaults.read_text().splitlines() if line.startswith("CONFIG_")]
     keys = {line.split("=", 1)[0] for line in settings}
     keys.update({"CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_USB", "CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_WIFI"})
+    if "CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC" in keys:
+        keys.update({"CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC", "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC",
+                     "CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC", "CONFIG_MBEDTLS_IRAM_8BIT_MEM_ALLOC"})
     preserved = []
     for line in target.read_text().splitlines():
         match = re.match(r"(?:# )?(CONFIG_\w+)(?:=| is not set)", line)

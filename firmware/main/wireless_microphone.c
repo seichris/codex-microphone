@@ -43,6 +43,7 @@ static SemaphoreHandle_t s_send_lock;
 static bool s_enabled;
 static bool s_connected;
 static bool s_authenticated;
+static esp_websocket_error_codes_t s_last_connection_error;
 static bool s_streaming;
 static bool s_armed;
 static bool s_stopping;
@@ -420,6 +421,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         if (lock_state(pdMS_TO_TICKS(20))) {
             s_connected = true;
             s_authenticated = false;
+            memset(&s_last_connection_error, 0, sizeof(s_last_connection_error));
             unlock_state();
         }
         xEventGroupSetBits(s_events, WIRELESS_EVENT_CONNECTED);
@@ -431,6 +433,9 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
     } else if (event_id == WEBSOCKET_EVENT_DISCONNECTED || event_id == WEBSOCKET_EVENT_CLOSED
                || event_id == WEBSOCKET_EVENT_ERROR) {
         if (lock_state(pdMS_TO_TICKS(20))) {
+            if (event_id == WEBSOCKET_EVENT_ERROR && event_data != NULL) {
+                s_last_connection_error = ((const esp_websocket_event_data_t *)event_data)->error_handle;
+            }
             if (s_streaming || s_armed || s_pending_start || s_stopping) s_failed_session = true;
             s_connected = false;
             s_authenticated = false;
@@ -631,6 +636,25 @@ esp_err_t wireless_microphone_init(void)
 }
 
 bool wireless_microphone_is_enabled(void) { return s_enabled; }
+
+void wireless_microphone_get_status(char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0) return;
+    if (!s_enabled) { snprintf(output, capacity, "Wi-Fi mic: not initialized"); return; }
+    if (!lock_state(pdMS_TO_TICKS(20))) { snprintf(output, capacity, "Wi-Fi mic: busy"); return; }
+    const bool connected = s_connected;
+    const bool authenticated = s_authenticated;
+    const esp_websocket_error_codes_t error = s_last_connection_error;
+    unlock_state();
+    if (authenticated) snprintf(output, capacity, "Wi-Fi mic: connected and paired");
+    else if (connected) snprintf(output, capacity, "Wi-Fi mic: authenticating");
+    else if (!wifi_manager_is_connected()) snprintf(output, capacity, "Wi-Fi mic: waiting for Wi-Fi");
+    else if (time(NULL) < 1704067200) snprintf(output, capacity, "Wi-Fi mic: waiting for clock sync");
+    else if (error.esp_tls_stack_err || error.esp_tls_last_esp_err || error.esp_ws_handshake_status_code) {
+        snprintf(output, capacity, "Wi-Fi mic: TLS %d / ESP %d / HTTP %d", error.esp_tls_stack_err,
+            (int)error.esp_tls_last_esp_err, error.esp_ws_handshake_status_code);
+    } else snprintf(output, capacity, "Wi-Fi mic: connecting");
+}
 
 bool wireless_microphone_is_ready(void)
 {

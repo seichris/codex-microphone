@@ -119,8 +119,11 @@ static bool snapshot_should_chime(
 
 static void render_snapshot(const attention_snapshot_t *snapshot)
 {
+    char wireless_status[112];
+    wireless_microphone_get_status(wireless_status, sizeof(wireless_status));
     bsp_display_lock(0);
     attention_ui_render(snapshot);
+    attention_ui_set_wireless_status(wireless_status);
     bsp_display_unlock();
 }
 

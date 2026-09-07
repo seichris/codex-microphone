@@ -39,6 +39,18 @@ Wi-Fi retries use delays from 1 to 30 seconds, reset after DHCP succeeds, and lo
 numeric disconnect reasons without printing network credentials. Loss of the
 DHCP address clears connection readiness.
 
+TLS allocations use PSRAM on this board. Its 16 KiB receive buffer and handshake
+working memory must not compete with USB, Wi-Fi, audio and DMA for internal RAM.
+Provisioning updates the allocation choice in existing sdkconfig files too;
+defaults alone do not replace a previously selected internal-only allocator.
+Certificate, hostname and date validation remain enabled.
+
+Open Settings on the board to check "Wi-Fi mic" status. "Connected and paired"
+means the board has authenticated its WebSocket connection, not merely joined
+Wi-Fi. A clock-wait status identifies SNTP startup; failed connections retain
+numeric TLS, ESP and HTTP error codes through subsequent disconnect events.
+The status includes no credentials or certificate material.
+
 ## Diagnosis
 
 - An unchanged initial "Connecting to the Mac" card means no poll has rendered
