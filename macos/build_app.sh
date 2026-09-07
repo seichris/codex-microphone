@@ -24,17 +24,17 @@ swiftc "$MACOS_ROOT/Sources/CodexESP32Display/DeviceOutlineIcon.swift" \
 iconutil -c icns "$MACOS_ROOT/build/DeviceIcon.iconset" \
   -o "$APP/Contents/Resources/DeviceIcon.icns"
 
-if [[ ! -f "$ROOT/bridge/config.json" ]]; then
-  printf 'Missing bridge/config.json; run npm run setup in bridge first.\n' >&2
-  exit 1
-fi
 rm -rf "$APP/Contents/Resources/bridge"
 mkdir -p "$APP/Contents/Resources/bridge"
 ditto "$ROOT/bridge/src" "$APP/Contents/Resources/bridge/src"
-cp "$ROOT/bridge/config.json" "$APP/Contents/Resources/bridge/config.json"
 chmod +x "$APP/Contents/MacOS/CodexESP32Display"
 
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" >/dev/null
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+  # Developer ID distribution requires the hardened runtime for notarization.
+  codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP" >/dev/null
+else
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" >/dev/null
+fi
 codesign --verify --deep --strict "$APP"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   printf 'Ad hoc signature: macOS privacy permissions may need reapproval after a rebuild.\n' >&2

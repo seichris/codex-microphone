@@ -64,6 +64,13 @@ Desktop, and the Voice request invokes its configured keyboard shortcut.
 
 ## 1. Start the Mac bridge
 
+The menu-bar companion keeps its bridge source in the app bundle, but stores the
+bearer token outside the bundle at
+`~/Library/Application Support/Codex ESP32 Display/bridge-config.json` with
+mode 600 permissions. A clean app install creates this file on first launch;
+the menu can copy the token for firmware provisioning. The command-line bridge
+continues to use `npm run setup` and the ignored `bridge/config.json` below.
+
 Prerequisites:
 
 - macOS with Codex Desktop or Codex CLI installed;
@@ -193,9 +200,10 @@ open "macos/build/Codex ESP32 Display.app"
 ```
 
 It replaces the bridge LaunchAgent while running and provides bridge status,
-start/stop, the dashboard, endpoint copying, Voice status/settings, and log
-access from its menu. Opening the dashboard from the menu automatically seeds
-its token and clears the URL fragment after the dashboard stores it locally.
+start/stop, the dashboard, endpoint and bridge-token copying, Voice
+status/settings, and log access from its menu. Opening the dashboard from the
+menu automatically seeds its token and clears the URL fragment after the
+dashboard stores it locally.
 Speech Recognition permission is required for native dictation. USB mode also
 needs Mac Microphone permission; Wi-Fi mode receives the board's WSS PCM
 directly and does not enumerate a Mac capture device. Audio is transcribed

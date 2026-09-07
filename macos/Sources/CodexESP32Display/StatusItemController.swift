@@ -76,6 +76,14 @@ final class StatusItemController: NSObject {
         copyItem.target = self
         menu.addItem(copyItem)
 
+        let copyTokenItem = NSMenuItem(
+            title: "Copy Bridge Token",
+            action: #selector(copyToken),
+            keyEquivalent: ""
+        )
+        copyTokenItem.target = self
+        menu.addItem(copyTokenItem)
+
         let logsItem = NSMenuItem(
             title: "Reveal Logs",
             action: #selector(revealLogs),
@@ -155,6 +163,10 @@ final class StatusItemController: NSObject {
 
     @objc private func copyEndpoint() {
         bridge.copyEndpoint()
+    }
+
+    @objc private func copyToken() {
+        bridge.copyToken()
     }
 
     @objc private func revealLogs() {

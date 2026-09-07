@@ -159,7 +159,7 @@ static esp_err_t perform_get(const char *url, response_buffer_t *response)
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         .keep_alive_enable = true,
-        .user_agent = "codex-esp32-display/0.2.0",
+        .user_agent = "codex-esp32-display/0.3.0",
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
