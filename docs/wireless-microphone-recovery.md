@@ -125,3 +125,7 @@ snapshot and detail sizes must not consume the workers' call-stack budget.
 Run the bridge suite, Swift tests/release build, and the ESP-IDF firmware build
 before deploying changes. Host fixtures do not establish physical radio timing,
 codec behavior, or battery performance.
+
+## Wireless recording timing
+
+The physical board reported a zero-byte send after 110 ms with errno zero, consistent with a socket write-readiness timeout. Separate transmit locking alone did not resolve it. Recording now disables modem sleep and restores the previous power-save mode when it ends or fails. Send operations allow 250 ms per library wait; the bounded capture queue holds 25 frames (500 ms, 48,000 PCM bytes), and acknowledgement liveness allows one second. These replace the earlier 100 ms send, 200 ms queue and 500 ms ACK budgets. The physical button still closes the PCM gate before waiting for the sender; queue overflow and liveness failure still terminate the session. No failed packet is retried into a possibly partially written WebSocket stream. Physical dropout qualification remains pending.

@@ -8,7 +8,7 @@
 #include "audio_stubs/platform.h"
 #include "../main/voice_audio.c"
 
-struct fake_queue { unsigned capacity, count, head; size_t width; uint8_t data[10][1920]; };
+struct fake_queue { unsigned capacity, count, head; size_t width; uint8_t data[25][1920]; };
 static struct fake_queue queue_storage;
 static struct fake_semaphore semaphores[4];
 static unsigned semaphore_count;
@@ -44,7 +44,7 @@ int xSemaphoreTake(SemaphoreHandle_t s, TickType_t timeout) {
 }
 int xSemaphoreGive(SemaphoreHandle_t s) { s->available = 1; return pdTRUE; }
 QueueHandle_t xQueueCreate(unsigned capacity, size_t width) {
-    assert(capacity <= 10 && width == 1920);
+    assert(capacity <= 25 && width == 1920);
     queue_storage = (struct fake_queue){ .capacity = capacity, .width = width }; return &queue_storage;
 }
 int xQueueReset(QueueHandle_t q) { q->head = 0; q->count = 0;
@@ -141,7 +141,10 @@ int main(void) {
     voice_audio_set_listening(false); voice_audio_set_listening(true);
     assert(voice_audio_read(pcm, 96, &bytes) == ESP_OK); expect_silence(pcm, 96);
     puts("PASS stop clears partially consumed USB frame");
-    setup(); for (unsigned i = 0; i < 11; ++i) capture_one();
+    setup(); for (unsigned i = 0; i < 25; ++i) capture_one();
+    assert(queue_storage.count == 25 && !voice_audio_take_overflow());
+    capture_one();
+    assert(queue_storage.count == 25);
     assert(voice_audio_take_overflow()); assert(!voice_audio_take_overflow());
     puts("PASS ring overflow remains latched and bounded");
     setup(); voice_audio_set_listening(false); during_reset = stop;

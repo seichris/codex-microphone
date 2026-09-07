@@ -20,10 +20,14 @@ static bool gate;
 static bool close_during_read;
 static bool fail_read;
 static bool fail_send;
+static bool delay_send;
 static unsigned transient_read_timeouts;
 static bool acknowledge_stop;
 static unsigned binary_sends, cancels, websocket_starts;
 static bool wifi_ready;
+static wifi_ps_type_t wifi_power_save;
+esp_err_t esp_wifi_get_ps(wifi_ps_type_t *value) { *value = wifi_power_save; return ESP_OK; }
+esp_err_t esp_wifi_set_ps(wifi_ps_type_t value) { wifi_power_save = value; return ESP_OK; }
 static cJSON *fixture;
 static jmp_buf stream_exit;
 
@@ -70,6 +74,7 @@ esp_err_t esp_websocket_client_start(esp_websocket_client_handle_t c) { (void)c;
 bool esp_websocket_client_is_connected(esp_websocket_client_handle_t c) { (void)c; return true; }
 int esp_websocket_client_send_text(esp_websocket_client_handle_t c, const char *data, int n, TickType_t ticks) {
     (void)c; (void)ticks;
+    if (!strcmp(data, "start")) assert(wifi_power_save == WIFI_PS_NONE);
     if (!strcmp(data, "cancel")) ++cancels;
     if (!strcmp(data, "stop") && acknowledge_stop) {
         deliver("ack", s_next_sequence - 1);
@@ -80,6 +85,7 @@ int esp_websocket_client_send_text(esp_websocket_client_handle_t c, const char *
 }
 int esp_websocket_client_send_bin(esp_websocket_client_handle_t c, const char *data, int n, TickType_t ticks) {
     (void)c; (void)data; (void)ticks; ++binary_sends;
+    if (delay_send) { assert(ticks >= 150); time_us += 150000; }
     if (fail_send) { time_us += 100000; errno = ETIMEDOUT; return -1; }
     // Simulate an ACK callback before send_bin returns on the stream task.
     deliver("ack", s_next_sequence);
@@ -106,7 +112,8 @@ static void setup(void) {
     lock_count = 0; time_us = 100000; wifi_ready = true; fake_clock = 1788739200; websocket_starts = 0; cancels = 0; binary_sends = 0;
     gate = true; close_during_read = false; fail_read = false; acknowledge_stop = false; transient_read_timeouts = 0;
     s_connected = true; s_authenticated = true; s_streaming = true; s_armed = true;
-    fail_send = false;
+    fail_send = false; delay_send = false;
+    s_wifi_power_save_saved = false; wifi_power_save = WIFI_PS_MAX_MODEM;
     s_pending_start = false; s_cancel_requested = false; s_failed_session = false;
     s_last_session_failure[0] = '\0';
     s_stopping = false; s_send_in_flight = false; s_have_ack = false;
@@ -154,6 +161,19 @@ int main(void) {
     assert(strstr(status, "audio send r=-1 errno="));
     assert(strstr(status, "t=100ms (frame 5)"));
     puts("PASS send failure closes capture and retains transport timing");
+    setup();
+    s_wifi_power_save_saved = true; s_idle_wifi_power_save = WIFI_PS_MAX_MODEM;
+    wifi_power_save = WIFI_PS_NONE;
+    fail_session("simulated write timeout");
+    assert(wifi_power_save == WIFI_PS_MAX_MODEM && !s_wifi_power_save_saved && !gate);
+    puts("PASS recording failure restores original Wi-Fi power policy");
+    setup(); s_streaming = false; s_armed = false; gate = false;
+    assert(wireless_microphone_start_session("task", "request") == ESP_ERR_TIMEOUT);
+    assert(wifi_power_save == WIFI_PS_MAX_MODEM && !s_wifi_power_save_saved);
+    puts("PASS preparation disables modem sleep and timeout restores idle policy");
+    setup(); delay_send = true; s_next_sequence = 0; stream_once();
+    assert(binary_sends == 1 && s_next_sequence == 1 && !s_failed_session);
+    puts("PASS 150 ms delayed audio send retains sequence and live capture");
     setup(); wifi_ready = false;
     if (setjmp(stream_exit) == 0) connection_task(NULL);
     assert(websocket_starts == 0);
@@ -196,7 +216,7 @@ int main(void) {
     puts("PASS discarded pre-arm read may span two periods without aborting startup");
     setup(); fail_read = true; s_next_sequence = 0; stream_once();
     assert(s_failed_session && !gate && binary_sends == 0);
-    assert(time_us > 500000 && time_us <= 530000);
+    assert(time_us > 1000000 && time_us <= 1030000);
     puts("PASS missing first PCM fails closed within existing ACK liveness budget");
     setup(); esp_websocket_event_data_t pong = { .op_code = 0xA, .fin = true };
     websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_DATA, &pong);

@@ -8,7 +8,7 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 HEADERS = (
-    "mbedtls/x509_crt.h", "esp_err.h", "esp_log.h", "esp_timer.h", "esp_websocket_client.h", "cJSON.h",
+    "mbedtls/x509_crt.h", "esp_err.h", "esp_wifi.h", "esp_log.h", "esp_timer.h", "esp_websocket_client.h", "cJSON.h",
     "freertos/FreeRTOS.h", "freertos/event_groups.h", "freertos/semphr.h",
     "freertos/task.h", "sdkconfig.h",
 )

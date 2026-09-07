@@ -11,6 +11,7 @@
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -28,10 +29,10 @@
 #define WIRELESS_EVENT_LISTENING BIT2
 #define WIRELESS_EVENT_FAILED BIT3
 #define WIRELESS_EVENT_STOPPED BIT4
-#define WIRELESS_ACK_TIMEOUT_MS 500U
+#define WIRELESS_ACK_TIMEOUT_MS 1000U
 #define WIRELESS_START_TIMEOUT_MS 5000U
 #define WIRELESS_STOP_DRAIN_MS 250U
-#define WIRELESS_SEND_TIMEOUT_MS 100U
+#define WIRELESS_SEND_TIMEOUT_MS 250U
 #define WIRELESS_STREAM_STACK 8192U
 #define WIRELESS_STREAM_PRIORITY 7U
 
@@ -42,6 +43,8 @@ static EventGroupHandle_t s_events;
 static SemaphoreHandle_t s_state_lock;
 static SemaphoreHandle_t s_send_lock;
 static bool s_enabled;
+static bool s_wifi_power_save_saved;
+static wifi_ps_type_t s_idle_wifi_power_save;
 static bool s_connected;
 static bool s_authenticated;
 static esp_websocket_error_codes_t s_last_connection_error;
@@ -246,6 +249,9 @@ static void stop_local_stream(void)
         s_stopping = false;
         s_send_in_flight = false;
         s_pending_start = false;
+        if (s_wifi_power_save_saved && esp_wifi_set_ps(s_idle_wifi_power_save) == ESP_OK) {
+            s_wifi_power_save_saved = false;
+        }
         unlock_state();
     }
     voice_audio_set_listening(false);
@@ -714,6 +720,17 @@ esp_err_t wireless_microphone_start_session(const char *thread_id, const char *r
     if (!lock_state(pdMS_TO_TICKS(20))) return ESP_ERR_TIMEOUT;
     if (s_streaming || s_armed || s_pending_start || s_stopping || s_cancel_requested) {
         unlock_state(); return ESP_ERR_INVALID_STATE;
+    }
+    // Keep downlink ACKs and socket progress independent of DTIM sleep while
+    // recording. Preserve the caller's idle policy and restore it on every stop.
+    if (!s_wifi_power_save_saved) {
+        if (esp_wifi_get_ps(&s_idle_wifi_power_save) != ESP_OK) {
+            unlock_state(); return ESP_FAIL;
+        }
+        s_wifi_power_save_saved = true;
+    }
+    if (esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) {
+        unlock_state(); return ESP_FAIL;
     }
     s_pending_start = true;
     s_stopping = false;

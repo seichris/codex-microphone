@@ -78,3 +78,7 @@ static inline void mbedtls_x509_crt_free(mbedtls_x509_crt *c) { (void)c; }
 static inline int mbedtls_x509_crt_parse(mbedtls_x509_crt *c, const unsigned char *p, size_t n) { (void)c; (void)p; (void)n; return 0; }
 
 static inline void vTaskDelete(TaskHandle_t t) { (void)t; }
+
+typedef enum { WIFI_PS_NONE, WIFI_PS_MIN_MODEM, WIFI_PS_MAX_MODEM } wifi_ps_type_t;
+esp_err_t esp_wifi_get_ps(wifi_ps_type_t *value);
+esp_err_t esp_wifi_set_ps(wifi_ps_type_t value);

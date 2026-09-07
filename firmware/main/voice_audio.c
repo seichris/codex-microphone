@@ -13,7 +13,7 @@
 
 #define MICROPHONE_GAIN_DB 30.0F
 #define CAPTURE_FRAME_BYTES 1920U
-#define CAPTURE_RING_FRAMES 10U
+#define CAPTURE_RING_FRAMES 25U // 500 ms, bounded tolerance for transient Wi-Fi stalls
 #define CAPTURE_TASK_STACK 6144U
 #define CAPTURE_TASK_PRIORITY 8U
 
