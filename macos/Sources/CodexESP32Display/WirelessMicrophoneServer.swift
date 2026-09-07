@@ -288,6 +288,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         var fragmentedMessage = Data()
         var fragmentedOpcode: NWProtocolWebSocket.Opcode?
         var authDeadline: DispatchWorkItem?
+        var heartbeat: WirelessConnectionHeartbeat?
         var startRequestID: String?
         var startDecision: StartDecision?
         var suppressFailureCallback = false
@@ -367,6 +368,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
             switch context.session.phase {
             case .prepared, .armed, .listening:
                 context.suppressFailureCallback = true
+                context.heartbeat?.stop()
                 context.connection.cancel()
                 if self.connection === context { self.connection = nil }
             default:
@@ -463,6 +465,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
             reportFailureIfNeeded(context, reason: "Wireless microphone listener stopped or pairing changed.")
         }
         connection?.authDeadline?.cancel()
+        connection?.heartbeat?.stop()
         connection?.connection.cancel()
         connection = nil
         listener?.cancel()
@@ -493,9 +496,11 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                     self.startReceiving(context)
                     self.scheduleAuthenticationDeadline(context, after: 3)
                 } else if case .failed = newState {
+                    context.heartbeat?.stop()
                     self.reportFailureIfNeeded(context, reason: "Wireless microphone connection failed.")
                     if self.connection === context { self.connection = nil }
                 } else if case .cancelled = newState {
+                    context.heartbeat?.stop()
                     self.reportFailureIfNeeded(context, reason: "Wireless microphone connection closed.")
                     if self.connection === context { self.connection = nil }
                 }
@@ -583,6 +588,7 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
                 let capabilities = try context.session.authenticate(message)
                 context.authenticated = true
                 context.authDeadline?.cancel()
+                startHeartbeat(context)
                 send(context, capabilities)
             case .start:
                 let before = context.session.snapshot
@@ -683,9 +689,29 @@ final class WirelessMicrophoneServer: @unchecked Sendable {
         send(context, .init(.error, errorCode: code, message: String(message.prefix(512))))
     }
 
+    private func startHeartbeat(_ context: ConnectionContext) {
+        guard context.heartbeat == nil else { return }
+        let heartbeat = WirelessConnectionHeartbeat(queue: queue, ping: { [weak self, weak context] reply in
+            guard let self, let context, self.connection === context else { reply(false); return }
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .ping)
+            metadata.setPongHandler(self.queue) { error in reply(error == nil) }
+            let content = NWConnection.ContentContext(identifier: "codex-microphone-liveness", metadata: [metadata])
+            context.connection.send(content: Data(), contentContext: content, isComplete: true,
+                completion: .contentProcessed { error in if error != nil { reply(false) } })
+        }, failure: { [weak self, weak context] in
+            guard let self, let context, self.connection === context else { return }
+            self.fail(context, "Wireless microphone stopped responding; reconnect the board.")
+        })
+        context.heartbeat = heartbeat
+        heartbeat.start()
+    }
+
     private func fail(_ context: ConnectionContext, _ reason: String) {
+        // Ignore late send/pong callbacks belonging to an obsolete connection.
+        guard connection === context else { return }
         reportFailureIfNeeded(context, reason: reason)
         context.authDeadline?.cancel()
+        context.heartbeat?.stop()
         context.connection.cancel()
         if connection === context { connection = nil }
         onStateChange?(.failed(reason))

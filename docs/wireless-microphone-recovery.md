@@ -51,6 +51,12 @@ Wi-Fi. A clock-wait status identifies SNTP startup; failed connections retain
 numeric TLS, ESP and HTTP error codes through subsequent disconnect events.
 The status includes no credentials or certificate material.
 
+The Mac probes authenticated connections every five seconds with a WebSocket
+ping and allows ten seconds for its pong. An unresponsive connection is closed
+and releases the single-board slot, allowing reconnection after a board reset
+without restarting the companion. New connections cannot displace a healthy
+board; cleanup and late callbacks remain scoped to the old connection.
+
 A second long press stops the active recording using its retained task ID,
 including when its card disappears after becoming read, another card is selected,
 or Settings is open. The screen selection is consulted only to start a new
