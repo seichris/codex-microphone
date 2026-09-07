@@ -193,7 +193,7 @@ static esp_err_t perform_get(const char *url, response_buffer_t *response)
     if (response->overflow) return ESP_ERR_INVALID_SIZE;
     if (status != 200) {
         ESP_LOGW(TAG, "Bridge returned HTTP %d", status);
-        if (status == 401) return ESP_ERR_INVALID_STATE;
+        if (status == 401) return ATTENTION_ERR_UNAUTHORIZED;
         if (status == 404) return ESP_ERR_NOT_FOUND;
         return ESP_FAIL;
     }
@@ -243,7 +243,7 @@ static esp_err_t perform_post(const char *url, const char *body, response_buffer
     if (response->overflow) return ESP_ERR_INVALID_SIZE;
     if (status != 200) {
         ESP_LOGW(TAG, "Desktop command returned HTTP %d", status);
-        if (status == 401) return ESP_ERR_INVALID_STATE;
+        if (status == 401) return ATTENTION_ERR_UNAUTHORIZED;
         if (status == 404) return ESP_ERR_NOT_FOUND;
         if (status == 409) return ESP_ERR_INVALID_STATE;
         if (status == 503) return ESP_ERR_NOT_SUPPORTED;

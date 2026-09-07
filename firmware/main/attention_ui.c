@@ -9,6 +9,7 @@
 static lv_obj_t *s_list_view;
 static lv_obj_t *s_detail_view;
 static lv_obj_t *s_settings_view;
+static lv_obj_t *s_wireless_status;
 static lv_obj_t *s_count_label;
 static lv_obj_t *s_status_dot;
 static lv_obj_t *s_list;
@@ -484,6 +485,13 @@ static void create_current_card(void)
     lv_obj_align(s_current_meta, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 }
 
+void attention_ui_show_startup_status(const char *message, bool failed)
+{
+    if (s_current_card == NULL) return;
+    lv_label_set_text(s_current_title, failed ? "Device startup failed" : "Starting device");
+    lv_label_set_text(s_current_meta, message);
+}
+
 static void update_current_card(void)
 {
     if (s_current_card == NULL) return;
@@ -491,7 +499,7 @@ static void update_current_card(void)
     if (!current->available) {
         if (s_snapshot.source_error[0] != '\0') {
             lv_label_set_text(s_current_title, "Bridge data unavailable");
-            lv_label_set_text(s_current_meta, "Check the bridge and Wi-Fi");
+            lv_label_set_text(s_current_meta, s_snapshot.source_error);
         } else if (s_snapshot.desktop_control_availability == ATTENTION_DESKTOP_CONTROL_UNKNOWN) {
             lv_label_set_text(s_current_title, "Controller status unknown");
             lv_label_set_text(s_current_meta, "Check the Mac bridge and companion");
@@ -864,7 +872,19 @@ static void create_settings_view(lv_obj_t *screen)
 
     create_settings_font_row(content, 22, "Title size", "Example thread title", true);
     create_settings_font_row(content, 216, "Subtitle size", "Example project  |  2h", false);
+    s_wireless_status = lv_label_create(s_settings_view);
+    lv_obj_set_width(s_wireless_status, 390);
+    lv_label_set_long_mode(s_wireless_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(s_wireless_status, LV_TEXT_ALIGN_CENTER, 0);
+    set_common_text(s_wireless_status, &lv_font_montserrat_14, COLOR_MUTED);
+    lv_obj_align(s_wireless_status, LV_ALIGN_TOP_MID, 0, 46);
+    attention_ui_set_wireless_status("Wi-Fi mic: starting");
     update_settings_controls();
+}
+
+void attention_ui_set_wireless_status(const char *message)
+{
+    if (s_wireless_status != NULL) lv_label_set_text(s_wireless_status, message == NULL ? "" : message);
 }
 
 static void update_settings_controls(void)

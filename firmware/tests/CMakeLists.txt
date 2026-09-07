@@ -34,3 +34,5 @@ add_test(NAME voice_audio_capture
 
 add_test(NAME wireless_microphone_lifecycle
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/run_wireless_lifecycle_tests.py")
+add_test(NAME wifi_manager
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/run_wifi_manager_tests.py")

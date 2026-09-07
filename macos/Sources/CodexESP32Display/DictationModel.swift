@@ -12,6 +12,10 @@ final class DictationModel: ObservableObject {
     @Published private(set) var handoffMessage: String?
     @Published private(set) var isOpeningDraft = false
     @Published private(set) var permissionRevision = 0
+    // One memory-only recovery copy. A successful URL open is not a composer
+    // acknowledgement. Never automatically replay an uncertain handoff.
+    struct HandoffRecovery { let threadID: String; let text: String }
+    @Published private(set) var lastAttemptedHandoff: HandoffRecovery?
     var onStateChange: (() -> Void)?
     private let recorder = DictationRecorder()
     private let wirelessServer: WirelessMicrophoneServer?
@@ -169,11 +173,24 @@ final class DictationModel: ObservableObject {
     func finish(threadId: String) throws {
         guard session.threadId == threadId else { throw DictationError.message("This recording belongs to a different task.") }
         if let id = session.id, session.isBusy {
-            if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
+            if sessionTransport == .wifi { cancelOwnedWirelessSession() }
             session.finishing(id)
-            recorder.finish()
+            recorder.finish(id: id)
             onStateChange?()
         }
+    }
+
+    private func cancelOwnedWirelessSession() {
+        guard sessionTransport == .wifi, let id = wirelessSessionIdentifier else { return }
+        wirelessServer?.cancelActiveSession(sessionID: id)
+    }
+
+    func finishWireless(threadId: String, sessionID: UUID) async -> Bool {
+        guard session.threadId == threadId, sessionTransport == .wifi,
+              wirelessSessionIdentifier == sessionID, let id = session.id, session.isBusy else { return false }
+        session.finishing(id)
+        onStateChange?()
+        return await recorder.finishWireless(sessionID: sessionID)
     }
 
     func failWirelessSession(threadId: String, sessionID: UUID, message: String) {
@@ -181,12 +198,13 @@ final class DictationModel: ObservableObject {
               sessionTransport == .wifi,
               wirelessSessionIdentifier == sessionID,
               session.isBusy else { return }
-        recorder.cancel(message: message)
+        recorder.cancel(message: message, sessionID: sessionID)
     }
 
     /// Network callbacks call this through the recorder's private serial queue;
     /// no actor/UI state is touched here.
-    nonisolated func appendWirelessFrame(_ frame: WirelessMicrophoneProtocol.AudioFrame) {
+    @discardableResult
+    nonisolated func appendWirelessFrame(_ frame: WirelessMicrophoneProtocol.AudioFrame) -> Bool {
         recorder.appendWirelessFrame(frame)
     }
 
@@ -203,7 +221,7 @@ final class DictationModel: ObservableObject {
             session.recording(id)
             DictationRecordingOverlayController.shared.show(model: self)
         case .finishing:
-            if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
+            if sessionTransport == .wifi { cancelOwnedWirelessSession() }
             session.finishing(id)
             DictationRecordingOverlayController.shared.show(model: self)
         case let .transcript(text, final):
@@ -217,7 +235,7 @@ final class DictationModel: ObservableObject {
             if final {
                 // Speech can finish naturally without a preceding finish event.
                 // Stop the board stream before handing off or clearing its ID.
-                if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
+                if sessionTransport == .wifi { cancelOwnedWirelessSession() }
                 level = 0
                 DictationRecordingOverlayController.shared.hide()
                 // update rejects terminal callbacks, so only the first completed
@@ -228,7 +246,7 @@ final class DictationModel: ObservableObject {
                 else { showWindow() }
             }
         case let .failed(message):
-            if sessionTransport == .wifi { wirelessServer?.cancelActiveSession() }
+            if sessionTransport == .wifi { cancelOwnedWirelessSession() }
             session.fail(id, message)
             level = 0
             DictationRecordingOverlayController.shared.hide()
@@ -248,6 +266,7 @@ final class DictationModel: ObservableObject {
             return
         }
         let sessionId = session.id
+        lastAttemptedHandoff = HandoffRecovery(threadID: threadId, text: draftText)
         isOpeningDraft = true
         handoffMessage = "Opening the recorded task's draft…"
         Task {
@@ -255,9 +274,9 @@ final class DictationModel: ObservableObject {
             do {
                 try await openDraftLink(url)
                 guard session.id == sessionId else { return }
-                DictationDiagnostics.record("draft-link-accepted")
-                // Codex now receives the text automatically. Do not leave a
-                // hidden draft behind that would block the next recording.
+                DictationDiagnostics.record("draft-link-open-request-accepted")
+                // Release the completed recording, but retain the recovery copy
+                // until explicitly cleared or replaced by the next handoff.
                 session.discard()
                 draftText = ""
                 sessionTransport = .usb
@@ -274,6 +293,8 @@ final class DictationModel: ObservableObject {
             }
         }
     }
+
+    func clearHandoffRecovery() { lastAttemptedHandoff = nil }
 
     func showWindow() {
         DictationRecordingOverlayController.shared.hide()
@@ -306,7 +327,14 @@ private struct DictationReviewView: View {
                 .disabled(model.session.isBusy).accessibilityLabel("Dictation text")
             if let error = model.session.error { Text(error).foregroundStyle(.red) }
             if let message = model.handoffMessage { Text(message).font(.caption) }
-            Text("Completed dictation is inserted automatically into the recorded task's Codex composer, replacing existing text. It never sends a message. A failed handoff remains here until you start another recording.")
+            if let recovery = model.lastAttemptedHandoff {
+                DisclosureGroup("Last handoff recovery copy (delivery not confirmed)") {
+                    Text("Task: \(recovery.threadID)").font(.caption).textSelection(.enabled)
+                    Text(recovery.text).textSelection(.enabled)
+                    Button("Clear recovery copy") { model.clearHandoffRecovery() }
+                }
+            }
+            Text("Completed dictation requests insertion into the recorded task's Codex composer, replacing existing text. It never sends a message. Check the exact task before repeating a handoff; opening a link does not confirm composer delivery.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20).frame(minWidth: 560, minHeight: 390)

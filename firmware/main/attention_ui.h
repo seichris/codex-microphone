@@ -13,6 +13,9 @@ void attention_ui_init(
     void *context
 );
 void attention_ui_render(const attention_snapshot_t *snapshot);
+// Called under the display lock before polling starts; never allocates a snapshot.
+void attention_ui_show_startup_status(const char *message, bool failed);
+void attention_ui_set_wireless_status(const char *message);
 bool attention_ui_select_next(void);
 bool attention_ui_activate_selected(void);
 bool attention_ui_get_selected_id(char *output, size_t output_size);

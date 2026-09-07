@@ -12,6 +12,8 @@ bridge/coverage/
 firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
+firmware/sdkconfig.pre-*
+firmware/.sdkconfig.*
 firmware/dependencies.lock
 firmware/managed_components/
 firmware/sdkconfig.wireless.defaults

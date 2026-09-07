@@ -14,12 +14,14 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         case failed(String)
     }
     private let queue = DispatchQueue(label: "display.dictation.capture")
-    // A bounded ingress prevents a stalled Speech request from turning a TCP
-    // backlog into unbounded retained PCM. Each slot is released after the
-    // frame has been consumed or discarded on the capture queue.
-    private let wirelessIngressSlots = DispatchSemaphore(value: 25)
-    private let wirelessIngressOverflowLock = NSLock()
-    private var wirelessIngressOverflowPending = false
+    private let wirelessIngress: WirelessAudioIngress
+    private var audioEnded = false
+    private static var monotonicNow: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    override init() {
+        wirelessIngress = WirelessAudioIngress(queue: queue)
+        super.init()
+    }
     private var session: AVCaptureSession?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -30,9 +32,9 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
     private var finishing = false
     private var samples = 0
     private var peak: Float = 0
-    private var lastLevel = Date.distantPast
-    private var startDeadline = Date.distantPast
-    private var lastBufferAt = Date.distantPast
+    private var lastLevel: TimeInterval = -.infinity
+    private var startDeadline: TimeInterval = 0
+    private var lastBufferAt: TimeInterval = 0
     private var transcriptAccumulator = DictationTranscriptAccumulator()
     private var transport: DictationTransport = .usb
     private var wirelessSessionID: UUID?
@@ -71,9 +73,10 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                 self.generation = id
                 self.event = event
                 self.startCompletion = completion
-                self.startDeadline = Date().addingTimeInterval(2)
-                self.lastBufferAt = Date()
+                self.startDeadline = Self.monotonicNow + 2
+                self.lastBufferAt = Self.monotonicNow
                 self.finishing = false
+                self.audioEnded = false
                 self.transport = transport
                 self.wirelessSessionID = wirelessSessionID
                 self.wirelessFormat = nil
@@ -125,7 +128,7 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                         capture.commitConfiguration()
                         self.session = capture
                         capture.startRunning()
-                        guard Date() < self.startDeadline else { throw DictationError.message("The microphone took too long to start. Try again.") }
+                        guard Self.monotonicNow < self.startDeadline else { throw DictationError.message("The microphone took too long to start. Try again.") }
                         self.checkBufferLiveness(id)
                         guard capture.isRunning else { throw DictationError.message("The Waveshare microphone did not start.") }
                         // A successful USB acknowledgement requires a real sample buffer.
@@ -145,7 +148,8 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                         // The receiver is prepared before the board commits/arms
                         // the session. Do not claim listening until the first
                         // validated frame arrives through appendWirelessFrame.
-                        self.startDeadline = Date().addingTimeInterval(5)
+                        self.startDeadline = Self.monotonicNow + 5
+                        self.wirelessIngress.open(sessionID: wirelessSessionID)
                         self.event?(.prepared)
                         if let completion = self.startCompletion {
                             self.startCompletion = nil
@@ -161,49 +165,59 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         }
     }
 
-    func finish() { queue.async { self.finishOnQueue() } }
-    func cancel() { cancel(message: "The Wi-Fi microphone connection ended. Any partial text is preserved for review.") }
-    func cancel(message: String) { queue.async { self.fail(message) } }
+    func finish(id: UUID) {
+        queue.async { if self.generation == id { self.finishOnQueue() } }
+    }
 
-    func appendWirelessFrame(_ frame: WirelessMicrophoneProtocol.AudioFrame) {
-        guard wirelessIngressSlots.wait(timeout: .now()) == .success else {
-            let sessionID = frame.sessionID
-            wirelessIngressOverflowLock.lock()
-            let shouldSignal = !wirelessIngressOverflowPending
-            wirelessIngressOverflowPending = true
-            wirelessIngressOverflowLock.unlock()
-            guard shouldSignal else { return }
-            queue.async {
-                defer {
-                    self.wirelessIngressOverflowLock.lock()
-                    self.wirelessIngressOverflowPending = false
-                    self.wirelessIngressOverflowLock.unlock()
-                }
-                guard self.transport == .wifi,
-                      self.wirelessSessionID == sessionID,
-                      self.generation != nil,
-                      !self.finishing else { return }
-                self.fail("The Wi-Fi microphone ingress queue overflowed.")
-            }
-            return
-        }
+    func cancel(message: String, sessionID: UUID) {
+        wirelessIngress.close(sessionID: sessionID)
         queue.async {
-            defer { self.wirelessIngressSlots.signal() }
-            guard self.transport == .wifi,
-                  self.generation != nil,
-                  !self.finishing,
+            guard self.transport == .wifi, self.wirelessSessionID == sessionID else { return }
+            self.fail(message)
+        }
+    }
+
+    /// Completion means all admitted frames drained and endAudio was called,
+    /// not that Speech finalized or that a composer accepted the transcript.
+    func finishWireless(sessionID: UUID) async -> Bool {
+        await withCheckedContinuation { completion in
+            let accepted = wirelessIngress.close(sessionID: sessionID) {
+                guard self.generation != nil, self.transport == .wifi,
+                      self.wirelessSessionID == sessionID else {
+                    completion.resume(returning: false); return
+                }
+                self.finishOnQueue()
+                DictationDiagnostics.record("wifi-recorder-drained", samples: self.samples)
+                completion.resume(returning: true)
+            }
+            if !accepted { completion.resume(returning: false) }
+        }
+    }
+
+    @discardableResult
+    func appendWirelessFrame(_ frame: WirelessMicrophoneProtocol.AudioFrame) -> Bool {
+        guard frame.pcm.count == WirelessMicrophoneProtocol.pcmBytesPerFrame else { return false }
+        return wirelessIngress.enqueue(sessionID: frame.sessionID) {
+            guard self.transport == .wifi, self.generation != nil, !self.finishing,
                   frame.sessionID == self.wirelessSessionID else { return }
             self.consumeWirelessFrame(frame)
         }
     }
 
+    private func endAudioOnce() {
+        guard !audioEnded, let request else { return }
+        audioEnded = true
+        request.endAudio()
+    }
+
     private func finishOnQueue() {
         guard generation != nil, !finishing else { return }
         finishing = true
+        if let wirelessSessionID { wirelessIngress.close(sessionID: wirelessSessionID) }
         DictationDiagnostics.record("finish", samples: samples, peak: peak)
         event?(.finishing)
         session?.stopRunning()
-        request?.endAudio()
+        endAudioOnce()
         let id = generation
         queue.asyncAfter(deadline: .now() + 10) {
             guard self.generation == id else { return }
@@ -214,12 +228,13 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard generation != nil, !finishing else { return }
-        if startCompletion != nil, Date() >= startDeadline {
+        guard generation != nil, !finishing, transport == .usb,
+              session?.outputs.contains(where: { $0 === output }) == true else { return }
+        if startCompletion != nil, Self.monotonicNow >= startDeadline {
             fail("The microphone took too long to deliver audio. Try again.")
             return
         }
-        lastBufferAt = Date()
+        lastBufferAt = Self.monotonicNow
         samples += CMSampleBufferGetNumSamples(sampleBuffer)
         if let block = CMSampleBufferGetDataBuffer(sampleBuffer), CMBlockBufferGetDataLength(block) > 0 {
             let length = CMBlockBufferGetDataLength(block)
@@ -235,7 +250,7 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                     return result
                 }
                 peak = max(peak, level)
-                if Date().timeIntervalSince(lastLevel) > 0.15 { lastLevel = Date(); event?(.level(level)) }
+                if Self.monotonicNow - lastLevel > 0.15 { lastLevel = Self.monotonicNow; event?(.level(level)) }
             }
         }
         request?.appendAudioSampleBuffer(sampleBuffer)
@@ -262,7 +277,7 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
             memcpy(channel, baseAddress, frame.pcm.count)
         }
         buffer.frameLength = AVAudioFrameCount(WirelessMicrophoneProtocol.samplesPerFrame)
-        lastBufferAt = Date()
+        lastBufferAt = Self.monotonicNow
         samples += WirelessMicrophoneProtocol.samplesPerFrame
         let level = frame.pcm.withUnsafeBytes { bytes -> Float in
             var result: Float = 0
@@ -273,8 +288,9 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
             return result
         }
         peak = max(peak, level)
-        if Date().timeIntervalSince(lastLevel) > 0.15 { lastLevel = Date(); event?(.level(level)) }
+        if Self.monotonicNow - lastLevel > 0.15 { lastLevel = Self.monotonicNow; event?(.level(level)) }
         request?.append(buffer)
+        if !wirelessDidEmitRecording { DictationDiagnostics.record("wifi-first-speech-append", samples: samples) }
         if startCompletion != nil {
             startCompletion = nil
             DictationDiagnostics.record("recording", samples: samples, peak: peak)
@@ -288,8 +304,8 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
     private func checkBufferLiveness(_ id: UUID) {
         queue.asyncAfter(deadline: .now() + 1) {
             guard self.generation == id, !self.finishing else { return }
-            if Date().timeIntervalSince(self.lastBufferAt) > 2 {
-                if self.transport == .wifi && self.samples == 0 && Date() < self.startDeadline {
+            if Self.monotonicNow - self.lastBufferAt > 2 {
+                if self.transport == .wifi && self.samples == 0 && Self.monotonicNow < self.startDeadline {
                     self.checkBufferLiveness(id)
                 } else {
                     self.fail(self.transport == .wifi
@@ -303,11 +319,12 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
     private func fail(_ message: String) { DictationDiagnostics.record("capture-or-recognition-failed", samples: samples, peak: peak); event?(.failed(message)); cleanup() }
 
     private func cleanup() {
+        if let wirelessSessionID { wirelessIngress.close(sessionID: wirelessSessionID) }
         generation = nil
         transcriptAccumulator.reset()
         session?.stopRunning()
         session = nil
-        request?.endAudio()
+        endAudioOnce()
         request = nil
         task?.cancel()
         task = nil

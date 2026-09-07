@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "wireless_stubs/platform.h"
+#include <time.h>
+static time_t fake_clock;
+static time_t test_time(time_t *output) { if (output) *output = fake_clock; return fake_clock; }
+#define time test_time
 #include "../main/wireless_microphone.c"
 
 static struct fake_semaphore locks[2];
@@ -15,12 +19,20 @@ static int64_t time_us;
 static bool gate;
 static bool close_during_read;
 static bool fail_read;
+static bool fail_send;
+static bool delay_send;
 static unsigned transient_read_timeouts;
 static bool acknowledge_stop;
-static unsigned binary_sends, cancels;
+static unsigned binary_sends, cancels, websocket_starts;
+static bool wifi_ready;
+static wifi_ps_type_t wifi_power_save;
+esp_err_t esp_wifi_get_ps(wifi_ps_type_t *value) { *value = wifi_power_save; return ESP_OK; }
+esp_err_t esp_wifi_set_ps(wifi_ps_type_t value) { wifi_power_save = value; return ESP_OK; }
 static cJSON *fixture;
 static jmp_buf stream_exit;
 
+bool wifi_manager_wait_connected(uint32_t timeout_ms) { (void)timeout_ms; return wifi_ready; }
+bool wifi_manager_is_connected(void) { return wifi_ready; }
 static char *copy_string(const char *s) { size_t n = strlen(s) + 1; char *p = malloc(n); assert(p); memcpy(p, s, n); return p; }
 size_t strlcpy(char *dst, const char *src, size_t cap) { size_t n = strlen(src); if (cap) { size_t m = n < cap - 1 ? n : cap - 1; memcpy(dst, src, m); dst[m] = 0; } return n; }
 cJSON *cJSON_CreateObject(void) { cJSON *v = calloc(1, sizeof(*v)); assert(v); v->type = 1; return v; }
@@ -56,12 +68,13 @@ EventBits_t xEventGroupWaitBits(EventGroupHandle_t e, EventBits_t b, int clear, 
 int64_t esp_timer_get_time(void) { return time_us; }
 void vTaskDelay(TickType_t ticks) { (void)ticks; longjmp(stream_exit, 1); }
 int xTaskCreate(void (*fn)(void *), const char *name, unsigned stack, void *arg, unsigned priority, TaskHandle_t *handle) { (void)fn; (void)name; (void)stack; (void)arg; (void)priority; (void)handle; return pdPASS; }
-esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_client_config_t *c) { (void)c; return (void *)1; }
+esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_client_config_t *c) { assert(c->enable_close_reconnect); return (void *)1; }
 esp_err_t esp_websocket_register_events(esp_websocket_client_handle_t c, int id, void (*f)(void *, esp_event_base_t, int32_t, void *), void *a) { (void)c; (void)id; (void)f; (void)a; return ESP_OK; }
-esp_err_t esp_websocket_client_start(esp_websocket_client_handle_t c) { (void)c; return ESP_OK; }
+esp_err_t esp_websocket_client_start(esp_websocket_client_handle_t c) { (void)c; ++websocket_starts; return ESP_OK; }
 bool esp_websocket_client_is_connected(esp_websocket_client_handle_t c) { (void)c; return true; }
 int esp_websocket_client_send_text(esp_websocket_client_handle_t c, const char *data, int n, TickType_t ticks) {
     (void)c; (void)ticks;
+    if (!strcmp(data, "start")) assert(wifi_power_save == WIFI_PS_NONE);
     if (!strcmp(data, "cancel")) ++cancels;
     if (!strcmp(data, "stop") && acknowledge_stop) {
         deliver("ack", s_next_sequence - 1);
@@ -72,6 +85,8 @@ int esp_websocket_client_send_text(esp_websocket_client_handle_t c, const char *
 }
 int esp_websocket_client_send_bin(esp_websocket_client_handle_t c, const char *data, int n, TickType_t ticks) {
     (void)c; (void)data; (void)ticks; ++binary_sends;
+    if (delay_send) { assert(ticks >= 150); time_us += 150000; }
+    if (fail_send) { time_us += 100000; errno = ETIMEDOUT; return -1; }
     // Simulate an ACK callback before send_bin returns on the stream task.
     deliver("ack", s_next_sequence);
     s_streaming = false; return n;
@@ -94,10 +109,13 @@ bool wireless_microphone_encode_audio_frame(uint8_t *out, size_t cap, const uint
     (void)id; (void)seq; (void)sample; (void)pcm; assert(cap >= n + 36); memset(out, 0, cap); *len = n + 36; return true;
 }
 static void setup(void) {
-    lock_count = 0; time_us = 100000; cancels = 0; binary_sends = 0;
+    lock_count = 0; time_us = 100000; wifi_ready = true; fake_clock = 1788739200; websocket_starts = 0; cancels = 0; binary_sends = 0;
     gate = true; close_during_read = false; fail_read = false; acknowledge_stop = false; transient_read_timeouts = 0;
     s_connected = true; s_authenticated = true; s_streaming = true; s_armed = true;
+    fail_send = false; delay_send = false;
+    s_wifi_power_save_saved = false; wifi_power_save = WIFI_PS_MAX_MODEM;
     s_pending_start = false; s_cancel_requested = false; s_failed_session = false;
+    s_last_session_failure[0] = '\0';
     s_stopping = false; s_send_in_flight = false; s_have_ack = false;
     s_generation = 1; s_next_sequence = 5; s_last_ack_ms = 0;
     strcpy(s_session_id, "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE");
@@ -105,6 +123,79 @@ static void setup(void) {
 }
 static void stream_once(void) { if (setjmp(stream_exit) == 0) stream_task(NULL); }
 int main(void) {
+    setup();
+    char status[112];
+    const esp_websocket_event_data_t failed_tls = { .error_handle = {
+        .esp_tls_stack_err = -32512, .esp_tls_last_esp_err = 32769,
+    } };
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_ERROR, (void *)&failed_tls);
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "TLS -32512 / ESP 32769 / HTTP 0"));
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_DISCONNECTED, NULL);
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "TLS -32512"));
+    s_connected = true; s_authenticated = true;
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strcmp(status, "Wi-Fi mic: connected and paired") == 0);
+    char bounded[8];
+    wireless_microphone_get_status(bounded, sizeof(bounded));
+    assert(bounded[7] == '\0');
+    puts("PASS connection diagnostics retain TLS error across disconnect and report paired readiness");
+    setup();
+    fail_session("capture ring overflow");
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "capture ring overflow (frame 5)"));
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_DISCONNECTED, NULL);
+    websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_CONNECTED, NULL);
+    s_authenticated = true;
+    fail_session("cancel send failed");
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "paired; last error: capture ring overflow"));
+    wireless_microphone_get_status(bounded, sizeof(bounded));
+    assert(bounded[7] == '\0');
+    puts("PASS originating session failure survives reconnect and secondary failure");
+    setup(); fail_send = true;
+    stream_once();
+    assert(!gate && wireless_microphone_has_failed());
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "audio send r=-1 errno="));
+    assert(strstr(status, "t=100ms (frame 5)"));
+    puts("PASS send failure closes capture and retains transport timing");
+    setup();
+    s_wifi_power_save_saved = true; s_idle_wifi_power_save = WIFI_PS_MAX_MODEM;
+    wifi_power_save = WIFI_PS_NONE;
+    fail_session("simulated write timeout");
+    assert(wifi_power_save == WIFI_PS_MAX_MODEM && !s_wifi_power_save_saved && !gate);
+    puts("PASS recording failure restores original Wi-Fi power policy");
+    setup(); s_streaming = false; s_armed = false; gate = false;
+    assert(wireless_microphone_start_session("task", "request") == ESP_ERR_TIMEOUT);
+    assert(wifi_power_save == WIFI_PS_MAX_MODEM && !s_wifi_power_save_saved);
+    puts("PASS preparation disables modem sleep and timeout restores idle policy");
+    setup(); delay_send = true; s_next_sequence = 0; stream_once();
+    assert(binary_sends == 1 && s_next_sequence == 1 && !s_failed_session);
+    puts("PASS 150 ms delayed audio send retains sequence and live capture");
+    setup(); fail_session("simulated recording failure");
+    assert(wireless_microphone_take_failure());
+    assert(!wireless_microphone_take_failure());
+    assert(events & WIRELESS_EVENT_FAILED);
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "simulated recording failure"));
+    // A fresh focus/start gesture must not observe the prior failure again.
+    s_pending_start = true;
+    assert(!wireless_microphone_take_failure());
+    fail_session("new preparation failure");
+    assert(wireless_microphone_take_failure());
+    assert(!wireless_microphone_take_failure());
+    puts("PASS failure notification is consumed once while waiter event and diagnostic survive");
+    setup(); wifi_ready = false;
+    if (setjmp(stream_exit) == 0) connection_task(NULL);
+    assert(websocket_starts == 0);
+    setup(); fake_clock = 0;
+    if (setjmp(stream_exit) == 0) connection_task(NULL);
+    assert(websocket_starts == 0);
+    setup(); connection_task(NULL);
+    assert(websocket_starts == 1);
+    puts("PASS TLS startup waits for Wi-Fi and a usable clock");
     setup(); acknowledge_stop = true;
     assert(wireless_microphone_stop_session() == ESP_OK);
     assert(!gate && !wireless_microphone_has_active_session() && !wireless_microphone_has_failed() && cancels == 0);
@@ -138,7 +229,7 @@ int main(void) {
     puts("PASS discarded pre-arm read may span two periods without aborting startup");
     setup(); fail_read = true; s_next_sequence = 0; stream_once();
     assert(s_failed_session && !gate && binary_sends == 0);
-    assert(time_us > 500000 && time_us <= 530000);
+    assert(time_us > 1000000 && time_us <= 1030000);
     puts("PASS missing first PCM fails closed within existing ACK liveness budget");
     setup(); esp_websocket_event_data_t pong = { .op_code = 0xA, .fin = true };
     websocket_event_handler(NULL, NULL, WEBSOCKET_EVENT_DATA, &pong);

@@ -41,6 +41,14 @@ if [[ -z "$SERVER_NAME" ]]; then SERVER_NAME="$HOST"; fi
   printf 'Server name must not contain a path or whitespace.\n' >&2
   exit 2
 }
+# Keep endpoint/SAN fields free of URL delimiters and OpenSSL config syntax.
+# This provisioning workflow supports DNS names and IPv4 addresses.
+for endpoint_name in "$HOST" "$SERVER_NAME"; do
+  [[ "$endpoint_name" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$ ]] || {
+    printf 'Host and TLS server name must be DNS names or IPv4 addresses.\n' >&2
+    exit 2
+  }
+done
 command -v openssl >/dev/null || { printf 'openssl is required.\n' >&2; exit 1; }
 command -v jq >/dev/null || { printf 'jq is required.\n' >&2; exit 1; }
 
@@ -54,10 +62,10 @@ trap cleanup EXIT
 KEY="$TEMP_DIR/server.key"
 CERT="$TEMP_DIR/server.crt"
 PKCS12="$TEMP_DIR/server.p12"
-if [[ "$HOST" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
-  SAN="IP:$HOST"
+if [[ "$SERVER_NAME" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+  SAN="IP:$SERVER_NAME"
 else
-  SAN="DNS:$HOST"
+  SAN="DNS:$SERVER_NAME"
 fi
 
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 \

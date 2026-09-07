@@ -12,6 +12,7 @@ idf_component_register(
         "usb_microphone.c"
         "wireless_microphone_protocol.c"
         "wireless_microphone.c"
+        "wireless_certificate.c"
         "voice_control.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_timer
@@ -24,6 +25,7 @@ idf_component_register(
         esp_http_client
         esp_netif
         lwip
+        mbedtls
         esp_wifi
         esp_websocket_client
         json
@@ -32,3 +34,6 @@ idf_component_register(
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
+# Network worker frames must leave room for HTTP and LVGL call chains, even
+# with the maximum configured card count. Large models belong in PSRAM.
+set_source_files_properties(main.c PROPERTIES COMPILE_OPTIONS "-Wframe-larger-than=2048;-fstack-usage")

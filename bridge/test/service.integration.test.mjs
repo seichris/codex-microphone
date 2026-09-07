@@ -80,6 +80,7 @@ rl.on('line', line => {
     assert.equal(service.snapshot.desktopControlAvailable, true);
     assert.equal(service.snapshot.currentThread.id, PINNED);
     assert.equal(service.snapshot.currentThread.focusConfidence, 'inferred');
+    assert.match(service.snapshot.currentThread.project, /^Device selected · /);
     assert.equal(service.snapshot.capabilities.desktopVoiceHotkey, true);
     assert.equal(service.snapshot.diagnostics.desktopStateAvailable, true);
 
