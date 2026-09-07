@@ -185,15 +185,9 @@ final class BridgeController: ObservableObject {
     }
 
     func openDashboard() {
-        var url = dashboardURL
-        if let bridgeToken, !bridgeToken.isEmpty,
-           var components = URLComponents(url: dashboardURL, resolvingAgainstBaseURL: false) {
-            var fragment = URLComponents()
-            fragment.queryItems = [URLQueryItem(name: "token", value: bridgeToken)]
-            components.percentEncodedFragment = fragment.percentEncodedQuery
-            url = components.url ?? dashboardURL
-        }
-        NSWorkspace.shared.open(url)
+        // Keep administrative credentials out of URLs, browser history and
+        // copied endpoints. The dashboard retains its explicit token login.
+        NSWorkspace.shared.open(dashboardURL)
     }
 
     func copyEndpoint() {

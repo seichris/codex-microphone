@@ -23,8 +23,8 @@ continue to use the same local project.
 
 ## Get started
 
-- **Prerequisites:** macOS with Codex Desktop or CLI, Node.js 18.18+, and
-  ESP-IDF 5.4 or newer.
+- **Prerequisites:** macOS with Codex Desktop or CLI, Node.js 22, Python 3.11+, OpenSSL, and
+  ESP-IDF 5.4.4 or 5.5.
 - **Start the bridge:** clone into the existing local name, then run:
 
   ```bash
@@ -34,9 +34,12 @@ continue to use the same local project.
   npm start
   ```
 
-- **Flash the board:** run `idf.py set-target esp32s3` and `idf.py menuconfig`
-  in `firmware`, set Wi-Fi, the bridge attention endpoint, and bearer token,
-  then run `idf.py build` and `idf.py -p /dev/cu.usbmodemXXXX flash monitor`.
+- **Prepare and pair the board once:** follow [secure attention pairing](docs/attention-pairing.md)
+  for the initial firmware/partition update, owner-provisioned HMAC storage key,
+  and physically confirmed UART0 pairing. Wi-Fi, bridge trust and device identity
+  are stored in encrypted NVS; do not embed an attention URL or token in firmware.
+  Routine reconnects, DHCP changes, bridge restarts and token renewal need no rebuild.
+  Native USB remains the microphone interface, not the maintenance serial port.
 - **Enable paired Wi-Fi dictation (optional):** create and provision a pairing
   bundle with the scripts described in [macOS pairing instructions](macos/README.md#pairing-the-wi-fi-microphone).
 - **Run the Mac companion (optional):** use `./macos/build_app.sh`, open the

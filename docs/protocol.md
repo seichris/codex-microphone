@@ -1,14 +1,23 @@
 # Device protocol v1
 
-All device data endpoints require:
+Device data endpoints use paired HTTPS (default port 5182). Enrollment, trust,
+challenge/HMAC exchange, reset and migration are specified in
+[attention pairing](attention-pairing.md). All device data endpoints require:
 
 ```http
-Authorization: Bearer <bridge-token>
+Authorization: Bearer <short-lived-device-access-token>
+X-Codex-Device: <paired-device-id>
+X-Codex-Generation: <credential-generation>
+X-Codex-Session: <bridge-session-id>
+X-Codex-Sequence: <strictly-increasing-integer>
 Accept: application/json
 ```
 
 Responses are `Cache-Control: no-store`. A missing or incorrect token returns
-HTTP 401.
+HTTP 401. Revoked/unknown devices and stale generations return 403. A repeated
+sequence or obsolete session is rejected before executing a command. Device
+credentials cannot call refresh/admin routes. Loopback dashboard credentials
+remain separate and are not accepted by the device listener.
 
 ## Attention list
 
@@ -107,7 +116,7 @@ at 5,600 UTF-8 bytes by the bridge.
 
 ## Desktop focus and Voice
 
-All commands require the same bearer token as the list endpoint. Requests must
+All commands require the same paired device authorization headers as the list endpoint. Requests must
 use `Content-Type: application/json`, are limited to 4 KiB, reject unknown
 fields, and use an idempotent `requestId`.
 

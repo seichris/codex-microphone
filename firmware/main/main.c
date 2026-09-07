@@ -1,6 +1,9 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "attention_client.h"
+#include "attention_pairing.h"
+#include "attention_provisioning.h"
 #include "attention_display.h"
 #include "attention_audio.h"
 #include "attention_model.h"
@@ -122,6 +125,7 @@ static bool snapshot_should_chime(
 
 static void render_snapshot(const attention_snapshot_t *snapshot)
 {
+    if (attention_provisioning_active()) return;
     char wireless_status[112];
     wireless_microphone_get_status(wireless_status, sizeof(wireless_status));
     bsp_display_lock(0);
@@ -214,14 +218,7 @@ static void poll_task(void *argument)
 
     while (true) {
         reconcile_wireless_failure();
-        if (!wifi_manager_wait_connected(8000)) {
-            strlcpy(context->current.source_error, "Wi-Fi not connected", sizeof(context->current.source_error));
-            render_snapshot(&context->current);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            continue;
-        }
-
-        reconcile_wireless_failure();
+        if (attention_provisioning_active()) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
 
         const uint64_t poll_started_at_us = (uint64_t)esp_timer_get_time();
         esp_err_t result = attention_client_fetch(&context->fetched);
@@ -244,14 +241,19 @@ static void poll_task(void *argument)
             context->previous_success = context->fetched;
             has_previous_success = true;
         } else {
-            if (result == ATTENTION_ERR_UNAUTHORIZED) {
-                strlcpy(context->current.source_error, "Bridge rejected token (HTTP 401)", sizeof(context->current.source_error));
-            } else snprintf(
-                context->current.source_error,
-                sizeof(context->current.source_error),
-                "Request failed: %s",
-                esp_err_to_name(result)
-            );
+            if (result == ATTENTION_ERR_UNPAIRED || result == ATTENTION_ERR_STORAGE
+                || result == ATTENTION_ERR_UNAUTHORIZED || result == ATTENTION_ERR_RESET_PENDING) {
+                // Do not retain another pairing's cards or voice target across a
+                // security boundary. Ordinary transient Wi-Fi failures still keep
+                // the last snapshot with its distinct stale/error diagnostic.
+                memset(&context->current, 0, sizeof(context->current));
+                memset(&context->previous_success, 0, sizeof(context->previous_success));
+                has_previous_success = false;
+                bsp_display_lock(0);
+                attention_ui_show_list();
+                bsp_display_unlock();
+            }
+            strlcpy(context->current.source_error, attention_connection_error(result), sizeof(context->current.source_error));
             ESP_LOGW(TAG, "%s", context->current.source_error);
         }
         render_snapshot(&context->current);
@@ -269,8 +271,7 @@ static void detail_task(void *argument)
 
         memset(detail, 0, sizeof(*detail));
         esp_err_t result;
-        if (!wifi_manager_wait_connected(8000)) result = ESP_ERR_TIMEOUT;
-        else result = attention_client_fetch_detail(request.thread_id, detail);
+        result = attention_client_fetch_detail(request.thread_id, detail);
 
         bsp_display_lock(0);
         if (attention_ui_is_detail_for(request.thread_id)) {
@@ -440,7 +441,11 @@ static void button_task(void *argument)
             set_voice_ui_for(expired.capture_token, expired.thread_id,
                 result == ESP_OK ? ATTENTION_VOICE_MUTED : ATTENTION_VOICE_ERROR);
         }
-        if (!button_input_poll(&event)) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+        const bool has_event = button_input_poll(&event);
+        if (attention_provisioning_tick(has_event ? event : BUTTON_INPUT_NONE) || !has_event) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
         if (event == BUTTON_INPUT_BOOT_LONG || event == BUTTON_INPUT_PWR_LONG) {
             // Privacy boundary precedes display locking, target lookup and all
             // transport waits. This token cannot authorize a later canceled take.
@@ -521,10 +526,10 @@ static bool create_worker(TaskFunction_t task, const char *name, uint32_t stack_
 
 void app_main(void)
 {
-    esp_err_t nvs_result = nvs_flash_init();
+    esp_err_t nvs_result = nvs_flash_init_partition("nvs");
     if (nvs_result == ESP_ERR_NVS_NO_FREE_PAGES || nvs_result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
-        nvs_result = nvs_flash_init();
+        nvs_result = nvs_flash_init_partition("nvs");
     }
     ESP_ERROR_CHECK(nvs_result);
 
@@ -576,8 +581,25 @@ void app_main(void)
     if (audio_result != ESP_OK) {
         ESP_LOGW(TAG, "Attention audio disabled: %s", esp_err_to_name(audio_result));
     }
+    // Leave legacy wireless namespaces intact. Pairing uses its own encrypted
+    // partition and READS an owner-provisioned HMAC eFuse; it never burns one.
+    const esp_err_t pairing_result = attention_pairing_init();
+    if (pairing_result != ESP_OK) ESP_LOGW(TAG, "Secure pairing storage unavailable");
+    ESP_ERROR_CHECK(attention_connection_init());
+    const esp_err_t provisioning_result = attention_provisioning_start();
+    if (provisioning_result != ESP_OK) ESP_LOGW(TAG, "Serial pairing unavailable");
     show_startup_status("Starting Wi-Fi", false);
-    ESP_ERROR_CHECK(wifi_manager_start());
+    attention_pairing_record_t *pairing = calloc(1, sizeof(*pairing));
+    esp_err_t wifi_result = ESP_ERR_INVALID_STATE;
+    if (pairing != NULL && attention_pairing_copy(pairing) == ESP_OK) {
+        wifi_result = wifi_manager_start_with_credentials(pairing->ssid, pairing->password);
+    } else if (CONFIG_CODEX_ATTENTION_WIRELESS_URL[0] != '\0') {
+        // Preserve the existing independently paired WSS microphone path.
+        wifi_result = wifi_manager_start();
+    }
+    if (pairing != NULL) attention_pairing_zero(pairing, sizeof(*pairing));
+    free(pairing);
+    if (wifi_result != ESP_OK) ESP_LOGI(TAG, "Wi-Fi waits for valid provisioning");
     show_startup_status("Starting secure connection", false);
     audio_result = wireless_microphone_init();
     if (audio_result != ESP_OK && audio_result != ESP_ERR_INVALID_STATE && audio_result != ESP_ERR_NOT_SUPPORTED) {

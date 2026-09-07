@@ -6,7 +6,7 @@
 - reads thread names, projects, timestamps, live status, and pinned-section data;
 - reads Codex Desktop's local unread-ID set **read-only**;
 - observes `turn/completed` and status notifications;
-- exposes a bearer-token-protected attention-list endpoint;
+- exposes a paired-HTTPS attention-list endpoint with short-lived device authorization;
 - exposes an on-demand latest-text endpoint for threads currently in the inbox;
 - exposes authenticated Desktop state/focus/Voice endpoints backed by a private
   per-launch channel to the native companion;
@@ -68,7 +68,7 @@ Prerequisites:
 
 - macOS with Codex Desktop or Codex CLI installed;
 - Codex CLI on `PATH`, or bundled inside `ChatGPT.app`/legacy `Codex.app`;
-- Node.js 18.18 or newer.
+- Node.js 22, Python 3.11+, and OpenSSL.
 
 ```bash
 git clone https://github.com/seichris/codex-microphone.git codex-esp32-display
@@ -86,17 +86,11 @@ Open the browser dashboard:
 http://127.0.0.1:5180/
 ```
 
-The ESP32 list endpoint is:
-
-```text
-http://<mac-lan-ip>:5180/api/v1/attention
-```
-
-A typical macOS Wi-Fi address can be printed with:
-
-```bash
-ipconfig getifaddr en0
-```
+ESP32 devices pair through the physically confirmed UART0 flow and use runtime
+Bonjour discovery plus certificate-verified HTTPS on port 5182. No LAN IP or
+shared bearer is compiled into attention firmware. Follow
+[secure attention pairing](attention-pairing.md), including the one-time owner
+HMAC-key prerequisite and the `--rotate-admin` migration command.
 
 Allow incoming Node connections if the macOS firewall asks.
 
@@ -106,7 +100,9 @@ Allow incoming Node connections if the macOS firewall asks.
 
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
+  "deviceHost": "0.0.0.0",
+  "devicePort": 5182,
   "port": 5180,
   "token": "generated-by-npm-run-setup",
   "pollIntervalMs": 2000,
@@ -148,11 +144,10 @@ idf.py set-target esp32s3
 idf.py menuconfig
 ```
 
-Under **Codex ESP32 Display**, set:
-
-1. Wi-Fi SSID and password;
-2. the full attention endpoint printed during bridge setup;
-3. the same bearer token.
+For attention/control, do not set a firmware bridge URL or bearer. Complete the
+one-time secure storage/partition setup and runtime physical pairing in
+[attention pairing](attention-pairing.md). Legacy Wi-Fi/sdkconfig fields below
+remain only for the independently paired wireless microphone path.
 
 For battery-only dictation, generate and import a local pairing bundle in the
 Mac companion, then provision its non-secret endpoint plus certificate and
@@ -248,7 +243,8 @@ curl -H "Authorization: Bearer <token>" \
   http://127.0.0.1:5180/api/v1/threads/<thread-id>/latest
 ```
 
-Desktop state and commands use the same bearer token:
+These loopback administrative examples use the owner token. ESP32 desktop
+state and commands instead require the paired HTTPS device headers:
 
 ```text
 GET  /api/v1/desktop/state
@@ -265,9 +261,10 @@ See [docs/protocol.md](docs/protocol.md) and
 
 ## Security and compatibility
 
-- HTTP plus a bearer token prevents accidental access to the legacy bridge; it
-  does not encrypt LAN traffic. The wireless microphone uses a separate TLS
-  WebSocket with a per-board credential and certificate/host verification.
+- Attention devices use pinned-identity HTTPS and short-lived scoped credentials.
+  HTTP administration is loopback-only and uses a separate owner token. See the
+  [pairing threat model and release gate](attention-pairing.md). The wireless
+  microphone keeps its separate TLS WebSocket and per-board credential.
 - The bridge-to-companion controller uses a random token and a private
   per-launch temporary directory. Voice commands are idempotent by request ID.
 - Unread state comes from Codex Desktop's internal

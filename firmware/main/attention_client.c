@@ -5,55 +5,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
-#include "esp_http_client.h"
-#include "esp_log.h"
 #include "sdkconfig.h"
 
-#define RESPONSE_LIMIT (64 * 1024)
 #define DETAIL_URL_MAX 768
 #define COMMAND_BODY_MAX 512
 
-static const char *TAG = "attention_http";
+typedef struct { char *data; } response_buffer_t;
 
-typedef struct {
-    char *data;
-    size_t length;
-    size_t capacity;
-    bool overflow;
-} response_buffer_t;
-
-static esp_err_t append_response(response_buffer_t *buffer, const char *data, size_t length)
+static esp_err_t perform_get(const char *path, response_buffer_t *response)
 {
-    if (length == 0) return ESP_OK;
-    if (buffer->length + length + 1 > RESPONSE_LIMIT) {
-        buffer->overflow = true;
-        return ESP_ERR_NO_MEM;
-    }
-
-    const size_t required = buffer->length + length + 1;
-    if (required > buffer->capacity) {
-        size_t next = buffer->capacity == 0 ? 4096 : buffer->capacity;
-        while (next < required) next *= 2;
-        if (next > RESPONSE_LIMIT) next = RESPONSE_LIMIT;
-        char *resized = realloc(buffer->data, next);
-        if (resized == NULL) return ESP_ERR_NO_MEM;
-        buffer->data = resized;
-        buffer->capacity = next;
-    }
-
-    memcpy(buffer->data + buffer->length, data, length);
-    buffer->length += length;
-    buffer->data[buffer->length] = '\0';
-    return ESP_OK;
+    return attention_connection_request(path, NULL, &response->data);
 }
 
-static esp_err_t http_event(esp_http_client_event_t *event)
+static esp_err_t perform_post(const char *path, const char *body, response_buffer_t *response)
 {
-    response_buffer_t *buffer = event->user_data;
-    if (event->event_id == HTTP_EVENT_ON_DATA && buffer != NULL) {
-        return append_response(buffer, event->data, (size_t)event->data_len);
-    }
-    return ESP_OK;
+    return attention_connection_request(path, body, &response->data);
 }
 
 static void copy_json_string(char *destination, size_t size, const cJSON *object, const char *key)
@@ -147,110 +113,6 @@ static void parse_capabilities(const cJSON *object, attention_capabilities_t *ca
     capabilities->desktop_voice_hotkey = json_bool(object, "desktopVoiceHotkey");
     capabilities->power_button_long_press = json_bool(object, "powerButtonLongPress");
     capabilities->wireless_microphone = json_bool(object, "wirelessMicrophone");
-}
-
-static esp_err_t perform_get(const char *url, response_buffer_t *response)
-{
-    esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = http_event,
-        .user_data = response,
-        .timeout_ms = 8000,
-        .buffer_size = 2048,
-        .buffer_size_tx = 1024,
-        .keep_alive_enable = true,
-        .user_agent = "codex-esp32-display/0.2.0",
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) return ESP_ERR_NO_MEM;
-    esp_http_client_set_method(client, HTTP_METHOD_GET);
-    esp_http_client_set_header(client, "Accept", "application/json");
-
-    char authorization[320];
-    if (strlen(CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN) > 0) {
-        int written = snprintf(
-            authorization,
-            sizeof(authorization),
-            "Bearer %s",
-            CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN
-        );
-        if (written <= 0 || (size_t)written >= sizeof(authorization)) {
-            esp_http_client_cleanup(client);
-            return ESP_ERR_INVALID_SIZE;
-        }
-        esp_http_client_set_header(client, "Authorization", authorization);
-    }
-
-    esp_err_t result = esp_http_client_perform(client);
-    const int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (result != ESP_OK) {
-        ESP_LOGW(TAG, "Request failed: %s", esp_err_to_name(result));
-        return result;
-    }
-    if (response->overflow) return ESP_ERR_INVALID_SIZE;
-    if (status != 200) {
-        ESP_LOGW(TAG, "Bridge returned HTTP %d", status);
-        if (status == 401) return ATTENTION_ERR_UNAUTHORIZED;
-        if (status == 404) return ESP_ERR_NOT_FOUND;
-        return ESP_FAIL;
-    }
-    if (response->data == NULL || response->length == 0) return ESP_ERR_INVALID_RESPONSE;
-    return ESP_OK;
-}
-
-static esp_err_t perform_post(const char *url, const char *body, response_buffer_t *response)
-{
-    esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = http_event,
-        .user_data = response,
-        .timeout_ms = 8000,
-        .buffer_size = 2048,
-        .buffer_size_tx = 1024,
-        .keep_alive_enable = true,
-        .user_agent = "codex-esp32-display/0.3.0",
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) return ESP_ERR_NO_MEM;
-    esp_http_client_set_method(client, HTTP_METHOD_POST);
-    esp_http_client_set_header(client, "Accept", "application/json");
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_post_field(client, body, (int)strlen(body));
-
-    char authorization[320];
-    if (strlen(CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN) > 0) {
-        int written = snprintf(
-            authorization,
-            sizeof(authorization),
-            "Bearer %s",
-            CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN
-        );
-        if (written <= 0 || (size_t)written >= sizeof(authorization)) {
-            esp_http_client_cleanup(client);
-            return ESP_ERR_INVALID_SIZE;
-        }
-        esp_http_client_set_header(client, "Authorization", authorization);
-    }
-
-    esp_err_t result = esp_http_client_perform(client);
-    const int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-    if (result != ESP_OK) return result;
-    if (response->overflow) return ESP_ERR_INVALID_SIZE;
-    if (status != 200) {
-        ESP_LOGW(TAG, "Desktop command returned HTTP %d", status);
-        if (status == 401) return ATTENTION_ERR_UNAUTHORIZED;
-        if (status == 404) return ESP_ERR_NOT_FOUND;
-        if (status == 409) return ESP_ERR_INVALID_STATE;
-        if (status == 503) return ESP_ERR_NOT_SUPPORTED;
-        return ESP_FAIL;
-    }
-    if (response->data == NULL || response->length == 0) return ESP_ERR_INVALID_RESPONSE;
-    return ESP_OK;
 }
 
 static esp_err_t parse_snapshot(const char *json, attention_snapshot_t *snapshot)
@@ -374,43 +236,16 @@ static bool valid_thread_id(const char *thread_id)
 
 static esp_err_t bridge_api_url(const char *path, char *output, size_t output_size)
 {
-    if (path == NULL || output == NULL || output_size == 0) return ESP_ERR_INVALID_ARG;
-    const char *base = CONFIG_CODEX_ATTENTION_BRIDGE_URL;
-    const char *scheme = strstr(base, "://");
-    const char *base_path = scheme == NULL ? strchr(base, '/') : strchr(scheme + 3, '/');
-    const size_t prefix_length = base_path == NULL ? strlen(base) : (size_t)(base_path - base);
-    if (prefix_length > 600) return ESP_ERR_INVALID_SIZE;
-    const int written = snprintf(output, output_size, "%.*s%s", (int)prefix_length, base, path);
-    if (written <= 0 || (size_t)written >= output_size) return ESP_ERR_INVALID_SIZE;
+    if (path == NULL || output == NULL || strlen(path) >= output_size) return ESP_ERR_INVALID_ARG;
+    strlcpy(output, path, output_size);
     return ESP_OK;
 }
 
 static esp_err_t detail_url(const char *thread_id, char *output, size_t output_size)
 {
     if (!valid_thread_id(thread_id) || output == NULL || output_size == 0) return ESP_ERR_INVALID_ARG;
-
-    const char *base = CONFIG_CODEX_ATTENTION_BRIDGE_URL;
-    const char *marker = strstr(base, "/api/v1/attention");
-    size_t prefix_length;
-    if (marker != NULL) {
-        prefix_length = (size_t)(marker - base);
-    } else {
-        const char *scheme = strstr(base, "://");
-        const char *path = scheme == NULL ? strchr(base, '/') : strchr(scheme + 3, '/');
-        prefix_length = path == NULL ? strlen(base) : (size_t)(path - base);
-    }
-
-    if (prefix_length > 600) return ESP_ERR_INVALID_SIZE;
-    int written = snprintf(
-        output,
-        output_size,
-        "%.*s/api/v1/threads/%s/latest",
-        (int)prefix_length,
-        base,
-        thread_id
-    );
-    if (written <= 0 || (size_t)written >= output_size) return ESP_ERR_INVALID_SIZE;
-    return ESP_OK;
+    const int written = snprintf(output, output_size, "/api/v1/threads/%s/latest", thread_id);
+    return written > 0 && (size_t)written < output_size ? ESP_OK : ESP_ERR_INVALID_SIZE;
 }
 
 esp_err_t attention_client_fetch(attention_snapshot_t *snapshot)
@@ -418,7 +253,7 @@ esp_err_t attention_client_fetch(attention_snapshot_t *snapshot)
     if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
 
     response_buffer_t response = { 0 };
-    esp_err_t result = perform_get(CONFIG_CODEX_ATTENTION_BRIDGE_URL, &response);
+    esp_err_t result = perform_get("/api/v1/attention", &response);
     if (result == ESP_OK) result = parse_snapshot(response.data, snapshot);
     free(response.data);
     return result;

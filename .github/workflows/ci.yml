@@ -24,6 +24,26 @@ jobs:
       - working-directory: bridge
         run: npm run check
 
+  attention-pairing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install host TLS and JSON adapters
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libcurl4-openssl-dev libcjson-dev
+      - name: Test the real provisioning CLI and production firmware against the HTTPS bridge
+        run: |
+          python scripts/test-attention-provisioning.py
+          python firmware/tests/run_attention_pairing_tests.py
+          python firmware/tests/run_wifi_manager_tests.py
+          python firmware/tests/run_voice_audio_tests.py
+          python firmware/tests/run_wireless_lifecycle_tests.py
+
   provisioning:
     runs-on: ubuntu-latest
     steps:

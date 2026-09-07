@@ -1,57 +1,50 @@
 import { randomBytes } from 'node:crypto';
-import { access, chmod, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { networkInterfaces } from 'node:os';
+import { hostname } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const configPath = resolve(here, '..', 'config.json');
-
-let configExists = false;
-try {
-  await access(configPath, constants.F_OK);
-  configExists = true;
-} catch (error) {
-  if (error?.code !== 'ENOENT') throw error;
+const configPath = resolve(process.env.CODEX_ATTENTION_CONFIG ?? resolve(here, '..', 'config.json'));
+const arguments_ = process.argv.slice(2);
+if (arguments_.some((arg) => arg !== '--rotate-admin') || arguments_.length > 1) {
+  throw new Error('Usage: npm run setup -- [--rotate-admin]');
 }
+const rotate = arguments_.includes('--rotate-admin');
+let exists = false;
+try { await access(configPath, constants.F_OK); exists = true; }
+catch (error) { if (error?.code !== 'ENOENT') throw error; }
 
-if (configExists) {
-  console.error(`Refusing to overwrite existing ${configPath}`);
+if (exists && !rotate) {
+  console.error('Configuration already exists. Stop the bridge and use npm run setup -- --rotate-admin to migrate its administrative credential.');
   process.exitCode = 1;
 } else {
+  let previous = {};
+  if (exists) {
+    try {
+      previous = JSON.parse(await readFile(configPath, 'utf8'));
+      if (!previous || typeof previous !== 'object' || Array.isArray(previous)) throw new Error();
+    } catch { throw new Error('Invalid existing configuration; nothing was overwritten.'); }
+  }
   const config = {
-    host: '0.0.0.0',
-    port: 5180,
-    token: randomBytes(32).toString('base64url'),
-    pollIntervalMs: 2000,
-    maxThreads: 300,
-    maxItems: 30,
-    attentionFilter: 'unread+pinned',
-    codexBin: 'codex',
-    codexHome: '~/.codex',
+    deviceHost: '0.0.0.0', devicePort: 5182, fallbackHost: hostname(), port: 5180,
+    pollIntervalMs: 2000, maxThreads: 300, maxItems: 30,
+    attentionFilter: 'unread+pinned', codexBin: 'codex', codexHome: '~/.codex',
+    ...previous, host: '127.0.0.1', token: randomBytes(32).toString('base64url'),
   };
-
   await mkdir(dirname(configPath), { recursive: true });
-  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  // Best effort: some file systems ignore chmod semantics.
-  try { await chmod(configPath, 0o600); } catch {}
-
-  const addresses = [];
-  for (const entries of Object.values(networkInterfaces())) {
-    for (const entry of entries ?? []) {
-      if (entry.family === 'IPv4' && !entry.internal) addresses.push(entry.address);
-    }
-  }
-
-  console.log(`Created ${configPath}`);
-  console.log(`Token: ${config.token}`);
-  console.log('Put the same token into firmware → Codex ESP32 Display → Bridge token.');
-  if (addresses.length) {
-    for (const address of addresses) {
-      console.log(`Candidate bridge URL: http://${address}:${config.port}/api/v1/attention`);
-    }
-  } else {
-    console.log(`Bridge URL: http://<this-mac-lan-ip>:${config.port}/api/v1/attention`);
-  }
+  const temporary = `${configPath}.${randomBytes(8).toString('hex')}.tmp`;
+  let file;
+  try {
+    file = await open(temporary, 'wx', 0o600);
+    await file.writeFile(`${JSON.stringify(config, null, 2)}\n`);
+    await file.sync(); await file.close(); file = null;
+    await rename(temporary, configPath);
+    const directory = await open(dirname(configPath), 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
+  } finally { await file?.close(); await rm(temporary, { force: true }); }
+  console.log(rotate ? 'Administrative credential rotated. Restart the bridge and Mac companion.' : 'Created owner-only bridge configuration.');
+  console.log('Credentials are never printed, copied into URLs, or embedded in attention firmware.');
+  console.log('Start the bridge, then run npm run pair -- --port <serial-device>.');
 }

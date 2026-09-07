@@ -80,10 +80,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-esp_err_t wifi_manager_start(void)
+esp_err_t wifi_manager_start_with_credentials(const char *ssid, const char *password)
 {
-    const size_t ssid_length = strlen(CONFIG_CODEX_ATTENTION_WIFI_SSID);
-    const size_t password_length = strlen(CONFIG_CODEX_ATTENTION_WIFI_PASSWORD);
+    if (ssid == NULL || password == NULL || s_events != NULL) return ESP_ERR_INVALID_STATE;
+    const size_t ssid_length = strlen(ssid);
+    const size_t password_length = strlen(password);
     if (ssid_length == 0 || ssid_length > 32 || password_length > 64) {
         ESP_LOGW(TAG, "Invalid Wi-Fi credential lengths; check provisioning");
         return ESP_ERR_INVALID_ARG;
@@ -114,9 +115,9 @@ esp_err_t wifi_manager_start(void)
     wifi_config_t config = { 0 };
     // ESP-IDF accepts full-width 32-byte SSIDs and 64-byte hexadecimal PSKs.
     // strlcpy silently removed their final byte.
-    memcpy(config.sta.ssid, CONFIG_CODEX_ATTENTION_WIFI_SSID, ssid_length);
-    memcpy(config.sta.password, CONFIG_CODEX_ATTENTION_WIFI_PASSWORD, password_length);
-    config.sta.threshold.authmode = strlen(CONFIG_CODEX_ATTENTION_WIFI_PASSWORD) == 0
+    memcpy(config.sta.ssid, ssid, ssid_length);
+    memcpy(config.sta.password, password, password_length);
+    config.sta.threshold.authmode = strlen(password) == 0
         ? WIFI_AUTH_OPEN
         : WIFI_AUTH_WPA2_PSK;
     config.sta.pmf_cfg.capable = true;
@@ -147,4 +148,11 @@ bool wifi_manager_wait_connected(uint32_t timeout_ms)
 bool wifi_manager_is_connected(void)
 {
     return s_events != NULL && (xEventGroupGetBits(s_events) & WIFI_CONNECTED_BIT) != 0;
+}
+
+// Compatibility for the separately paired wireless microphone only. The
+// attention HTTPS client never consumes sdkconfig URLs or bearer credentials.
+esp_err_t wifi_manager_start(void)
+{
+    return wifi_manager_start_with_credentials(CONFIG_CODEX_ATTENTION_WIFI_SSID, CONFIG_CODEX_ATTENTION_WIFI_PASSWORD);
 }

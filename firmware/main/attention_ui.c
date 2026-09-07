@@ -6,6 +6,8 @@
 #include "lvgl.h"
 #include "nvs.h"
 
+static lv_obj_t *s_pairing_prompt;
+static lv_obj_t *s_pairing_prompt_text;
 static lv_obj_t *s_list_view;
 static lv_obj_t *s_detail_view;
 static lv_obj_t *s_settings_view;
@@ -1193,4 +1195,33 @@ bool attention_ui_is_detail_for(const char *thread_id)
     return attention_ui_is_detail_visible()
         && thread_id != NULL
         && strcmp(s_detail_id, thread_id) == 0;
+}
+
+// A full-screen overlay consumes touch while the hardware confirmation gate
+// consumes buttons. It never changes the selected/current-thread model.
+void attention_ui_show_pairing_prompt(const char *message, bool failed)
+{
+    if (s_pairing_prompt == NULL) {
+        s_pairing_prompt = lv_obj_create(lv_layer_top());
+        lv_obj_set_size(s_pairing_prompt, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_color(s_pairing_prompt, COLOR_BG, 0);
+        lv_obj_set_style_bg_opa(s_pairing_prompt, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(s_pairing_prompt, 28, 0);
+        lv_obj_add_flag(s_pairing_prompt, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(s_pairing_prompt, LV_OBJ_FLAG_SCROLLABLE);
+        s_pairing_prompt_text = lv_label_create(s_pairing_prompt);
+        lv_obj_set_width(s_pairing_prompt_text, LV_PCT(100));
+        lv_label_set_long_mode(s_pairing_prompt_text, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(s_pairing_prompt_text, &lv_font_montserrat_22, 0);
+        lv_obj_align(s_pairing_prompt_text, LV_ALIGN_CENTER, 0, 0);
+    }
+    lv_obj_set_style_text_color(s_pairing_prompt_text, failed ? COLOR_RED : COLOR_TEXT, 0);
+    lv_label_set_text(s_pairing_prompt_text, message);
+}
+
+void attention_ui_hide_pairing_prompt(void)
+{
+    if (s_pairing_prompt != NULL) lv_obj_delete(s_pairing_prompt);
+    s_pairing_prompt = NULL;
+    s_pairing_prompt_text = NULL;
 }

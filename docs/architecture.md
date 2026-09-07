@@ -63,7 +63,16 @@ microphone for Desktop Voice.
   to the shared local Speech recorder; audio is never written to disk or sent
   through the Node bridge.
 
-### HTTP bridge
+### Paired HTTPS and loopback administration
+
+The device listener is HTTPS on port 5182 with a persistent bridge identity,
+private trust anchor and per-device short-lived credentials. Bonjour only locates
+that identity. The dashboard and admin API remain HTTP on loopback port 5180
+with separate owner credentials; refresh and admin routes are not device-scoped.
+`pairing-store`, `device-auth` and `discovery` own persistence, authorization and
+advertising respectively. See [pairing lifecycle and threat model](attention-pairing.md).
+
+Existing data routes:
 
 - `GET /` — browser list/detail preview;
 - `GET /healthz` — public health without thread content;
@@ -81,8 +90,11 @@ monotonic `wirelessSession` summary. The bridge never carries the PCM stream.
 
 - `wifi_manager`: Wi-Fi connection/retry state and one-time SNTP clock setup
   required for TLS certificate validity checks.
-- `attention_client`: authenticated list/detail HTTP client with a 64 KiB hard
-  response ceiling.
+- `attention_client`: list/detail parsers over `attention_connection`, a serialized
+  paired HTTPS client with a 64 KiB hard response ceiling.
+- `attention_pairing`: versioned, HMAC-sealed encrypted NVS record and reset state.
+- `attention_provisioning`: separate UART0 local channel and internal-stack flash
+  writer; `attention_confirmation` requires a fresh physical BOOT hold.
 - `attention_ui`: LVGL list, persistent selection, and scrollable detail view.
 - `button_input`: debounced BOOT/GPIO0 plus AXP2101 PWR short-press polling.
 - `voice_audio`: shared 48 kHz duplex I²S setup, one ES7210 reader, bounded

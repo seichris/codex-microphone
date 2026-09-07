@@ -1,11 +1,14 @@
 {
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "port": 5180,
-  "token": "replace-with-a-long-random-token",
+  "token": "GENERATE_WITH_NPM_RUN_SETUP",
   "pollIntervalMs": 2000,
   "maxThreads": 300,
   "codexBin": "codex",
   "codexHome": "~/.codex",
   "maxItems": 30,
-  "attentionFilter": "unread+pinned"
+  "attentionFilter": "unread+pinned",
+  "deviceHost": "0.0.0.0",
+  "devicePort": 5182,
+  "fallbackHost": ""
 }
