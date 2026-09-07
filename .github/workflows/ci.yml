@@ -48,12 +48,16 @@ jobs:
 
   firmware:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        idf: [v5.4.4, v5.5]
     steps:
       - uses: actions/checkout@v4
       - name: Build ESP-IDF firmware
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.4.4
+          esp_idf_version: ${{ matrix.idf }}
           target: esp32s3
           path: firmware
 
