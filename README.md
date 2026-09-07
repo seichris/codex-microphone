@@ -1,5 +1,7 @@
 # Codex Microphone
 
+![Codex Microphone](docs/codex-mic-github.jpg)
+
 A compact Codex Desktop companion for the Waveshare ESP32-S3-Touch-AMOLED-2.06.
 It shows unread and pinned attention threads and turns the board into a
 privacy-gated USB or paired Wi-Fi microphone for the selected task.
