@@ -65,21 +65,27 @@ static esp_err_t persist(attention_pairing_record_t *next)
 
 esp_err_t attention_pairing_init(void)
 {
-#if !CONFIG_NVS_ENCRYPTION
+#if !CONFIG_NVS_ENCRYPTION || !CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC
     return ESP_ERR_NOT_SUPPORTED;
 #else
     s_lock = xSemaphoreCreateMutex();
     if (s_lock == NULL) return ESP_ERR_NO_MEM;
-    nvs_sec_scheme_t *scheme = NULL;
-    static const nvs_sec_config_hmac_t hmac_config = { .hmac_key_id = (hmac_key_id_t)CONFIG_CODEX_ATTENTION_PAIRING_HMAC_KEY_ID };
+    // ESP-IDF registers the HMAC provider before app_main. Its default
+    // descriptor owns the scheme data for the lifetime of the firmware.
+    // Reuse it, rather than registering/deregistering a temporary descriptor
+    // whose scheme_data would leave the SDK's copied default dangling.
+    nvs_sec_scheme_t *scheme = nvs_flash_get_default_security_scheme();
+    if (scheme == NULL || scheme->scheme_id != NVS_SEC_SCHEME_HMAC
+        || scheme->scheme_data == NULL) return ESP_ERR_NOT_SUPPORTED;
+    // Fail closed even if a later caller accidentally uses the SDK's generic
+    // encrypted-NVS initialization: generation must never burn an eFuse.
+    scheme->nvs_flash_key_gen = NULL;
+    nvs_sec_config_hmac_t *hmac_config = scheme->scheme_data;
+    hmac_config->hmac_key_id = (hmac_key_id_t)CONFIG_CODEX_ATTENTION_PAIRING_HMAC_KEY_ID;
     nvs_sec_cfg_t encryption = { 0 };
-    esp_err_t result = nvs_sec_provider_register_hmac(&hmac_config, &scheme);
-    // READ ONLY. nvs_flash_generate_keys_v2 would burn an eFuse on a fresh
-    // board. Factory/owner security provisioning is deliberately separate.
-    if (result == ESP_OK) result = nvs_flash_read_security_cfg_v2(scheme, &encryption);
+    esp_err_t result = nvs_flash_read_security_cfg_v2(scheme, &encryption);
     if (result == ESP_OK) result = nvs_flash_secure_init_partition(ATTENTION_PAIRING_PARTITION, &encryption);
     attention_pairing_zero(&encryption, sizeof(encryption));
-    if (scheme != NULL) nvs_sec_provider_deregister(scheme);
     if (result != ESP_OK) return result;
     result = nvs_open_from_partition(ATTENTION_PAIRING_PARTITION, "pairing", NVS_READWRITE, &s_nvs);
     if (result != ESP_OK) return result;

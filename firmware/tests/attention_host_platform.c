@@ -27,15 +27,26 @@ esp_err_t esp_hmac_calculate(hmac_key_id_t key, const void *data, size_t size, u
     const uint8_t owner_key[32] = { 0x72 }; // synthetic host-only eFuse fixture
     return HMAC(EVP_sha256(), owner_key, sizeof(owner_key), data, size, output, NULL) ? ESP_OK : ESP_FAIL;
 }
-esp_err_t nvs_sec_provider_register_hmac(const nvs_sec_config_hmac_t *config, nvs_sec_scheme_t **out)
+static esp_err_t forbidden_key_generation(const void *data, nvs_sec_cfg_t *config)
 {
-    static nvs_sec_scheme_t scheme;
-    assert(config->hmac_key_id == 5); *out = &scheme; return ESP_OK;
+    (void)data; (void)config;
+    assert(!"firmware must never invoke eFuse key generation");
+    return ESP_FAIL;
 }
-esp_err_t nvs_sec_provider_deregister(nvs_sec_scheme_t *scheme) { assert(scheme); return ESP_OK; }
+nvs_sec_scheme_t *nvs_flash_get_default_security_scheme(void)
+{
+    static nvs_sec_config_hmac_t config = { .hmac_key_id = 0 };
+    static nvs_sec_scheme_t scheme = { .scheme_id = NVS_SEC_SCHEME_HMAC,
+        .scheme_data = &config, .nvs_flash_key_gen = forbidden_key_generation };
+    return &scheme;
+}
 esp_err_t nvs_flash_read_security_cfg_v2(nvs_sec_scheme_t *scheme, nvs_sec_cfg_t *config)
 {
-    assert(scheme && config); memset(config, 0x55, sizeof(*config)); return host_key_available ? ESP_OK : ESP_ERR_NOT_FOUND;
+    assert(scheme && config && scheme->scheme_id == NVS_SEC_SCHEME_HMAC);
+    assert(scheme->nvs_flash_key_gen == NULL); // disabled even on an unprepared board
+    assert(((nvs_sec_config_hmac_t *)scheme->scheme_data)->hmac_key_id == 5);
+    memset(config, 0x55, sizeof(*config));
+    return host_key_available ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 esp_err_t nvs_flash_secure_init_partition(const char *name, nvs_sec_cfg_t *config)
 {

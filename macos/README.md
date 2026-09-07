@@ -13,8 +13,8 @@ open "macos/build/Codex ESP32 Display.app"
 
 The app starts `bridge/src/index.mjs` and writes its output to
 `~/Library/Logs/CodexESP32Display/bridge.log`. The menu provides bridge status,
-start/stop, the local dashboard, endpoint copying, log reveal, Desktop Voice
-status, Voice Settings, and quit.
+start/stop, the local dashboard, endpoint and bridge-token copying, log reveal,
+Desktop Voice status, Voice Settings, and quit.
 
 ## Device dictation
 
@@ -125,11 +125,17 @@ The private bridge/controller channel is a per-launch, mode-0700 temporary
 directory with a random token. Desktop-control commands are not exposed as an
 unauthenticated local socket.
 
-The build embeds the bridge source and current `bridge/config.json` in the app
-bundle so a Finder launch does not depend on access to the protected workspace.
-Opening the dashboard from the menu automatically seeds its token through a
-URL fragment, then removes the fragment from the address bar after saving it in
-the dashboard's local storage. Rebuild after changing the bridge config.
+The build embeds only the bridge source in the app bundle so a Finder launch
+does not depend on access to the protected workspace. On first launch, the app
+creates a private bridge config at
+`~/Library/Application Support/Codex ESP32 Display/bridge-config.json` with
+mode 600 permissions. Existing local builds that embedded `bridge/config.json`
+are migrated once. The menu's **Copy Local Admin Token** action makes the token
+available for the loopback dashboard only; it is never a device credential,
+committed, bundled, or copied into a URL. Paste it into the dashboard
+authentication field when needed. Use the physically confirmed
+[attention pairing flow](../docs/attention-pairing.md) with this same config
+path to provision a board.
 
 The previous `com.seichris.codex-esp32-display` LaunchAgent should remain
 unloaded while this app owns port `5180`.

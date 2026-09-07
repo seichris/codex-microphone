@@ -140,7 +140,7 @@ static esp_err_t exchange(const attention_pairing_record_t *record, const char *
         .disable_auto_redirect = true, .max_authorization_retries = -1,
         .event_handler = receive, .user_data = response,
         .timeout_ms = 5000, .buffer_size = 2048, .buffer_size_tx = 1024,
-        .user_agent = "codex-attention/1",
+        .user_agent = "codex-esp32-display/0.3.0",
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) return ESP_ERR_NO_MEM;

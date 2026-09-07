@@ -32,8 +32,11 @@ firmware/partition-table update is required; normal reconnects need no rebuild.
 The default legacy `nvs` partition is initialized explicitly without changing
 its existing format. Do not replace this with `nvs_flash_init()`: with HMAC NVS
 encryption enabled that API can automatically program an empty eFuse. The
-global default key selector is deliberately left at its unsupported sentinel 6;
-only the dedicated partition uses the explicitly configured supported key.
+SDK requires a supported default key selector (0–5) at compile time. Pairing
+initialization reuses the SDK-owned HMAC descriptor, selects the owner-configured
+key, and disables its key-generation callback before reading the existing key.
+This also prevents later generic encrypted-NVS initialization from generating a
+key. The descriptor remains valid for the lifetime of the firmware.
 
 Encrypted NVS plus a hardware HMAC detects record corruption and protects an
 offline flash dump. It is not protection against malicious replacement firmware,
@@ -59,7 +62,7 @@ From the repository root:
 python3 -m pip install -r scripts/requirements-attention.txt
 cd bridge
 npm run setup                 # once for a new Mac configuration
-npm start                     # or start the bridge with the Mac companion
+npm start                     # standalone bridge; do not also start the companion
 ```
 
 Do not run two bridge instances against the same store. In another terminal:
@@ -68,6 +71,21 @@ Do not run two bridge instances against the same store. In another terminal:
 cd bridge
 npm run pair -- --port /dev/cu.usbserial-EXAMPLE
 ```
+
+The packaged Mac companion instead creates its config at
+`~/Library/Application Support/Codex ESP32 Display/bridge-config.json`.
+When using that companion, start it instead of `npm start`, and explicitly select
+its config for pairing, reset, replacement, or admin rotation:
+
+```sh
+export CODEX_ATTENTION_CONFIG="$HOME/Library/Application Support/Codex ESP32 Display/bridge-config.json"
+cd bridge
+npm run pair -- --port /dev/cu.usbserial-EXAMPLE
+```
+
+Use the same config for every operation; selecting another bridge's config is
+not a trust migration. The menu's **Copy Local Admin Token** is only for local
+owner/dashboard access, not a device credential.
 
 The CLI reads the local administrative credential from the owner-only config,
 prompts for Wi-Fi credentials (password input is hidden), obtains the Mac's
@@ -91,7 +109,7 @@ No HTTP, shared-token, default-CA, or unverified-host fallback exists.
 Version 1 discovery uses IPv4 candidates, bounded queries, a 30-second address
 cache and 5-second HTTP timeouts. A failed transport invalidates the cache, so
 normal polling rediscovers after DHCP changes or service reappearance. On
-networks that block multicast, set `fallbackHost` in `bridge/config.json` **before
+networks that block multicast, set `fallbackHost` in the active bridge config **before
 pairing** to a stable DHCP/DNS hostname (optionally backed by a router reservation).
 An empty value disables this fallback. The same pinned identity is still
 required; the hostname is a locator, not a trust decision. A `.local` hostname

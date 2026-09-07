@@ -30,6 +30,8 @@ static inline void *heap_caps_malloc(size_t n, unsigned caps) { (void)caps; retu
 #define ESP_ERR_NVS_NOT_FOUND -10
 #define NVS_READWRITE 1
 #define CONFIG_NVS_ENCRYPTION 1
+#define CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC 1
+#define NVS_SEC_SCHEME_HMAC 1
 #define CONFIG_CODEX_ATTENTION_PAIRING_HMAC_KEY_ID 5
 #define CONFIG_CODEX_ATTENTION_MAX_ITEMS 20
 #define portMAX_DELAY UINT32_MAX
@@ -41,7 +43,11 @@ typedef int hmac_key_id_t;
 typedef void *SemaphoreHandle_t;
 typedef unsigned nvs_handle_t;
 typedef struct { unsigned char eky[32], tky[32]; } nvs_sec_cfg_t;
-typedef struct { int unused; } nvs_sec_scheme_t;
+typedef struct {
+    int scheme_id;
+    void *scheme_data;
+    esp_err_t (*nvs_flash_key_gen)(const void *, nvs_sec_cfg_t *);
+} nvs_sec_scheme_t;
 typedef struct { hmac_key_id_t hmac_key_id; } nvs_sec_config_hmac_t;
 typedef int mbedtls_md_info_t;
 typedef struct { X509 *native; } mbedtls_x509_crt;
@@ -58,8 +64,7 @@ int xSemaphoreTake(SemaphoreHandle_t lock, unsigned timeout);
 int xSemaphoreGive(SemaphoreHandle_t lock);
 void esp_fill_random(void *output, size_t size);
 esp_err_t esp_hmac_calculate(hmac_key_id_t key, const void *data, size_t size, uint8_t *output);
-esp_err_t nvs_sec_provider_register_hmac(const nvs_sec_config_hmac_t *config, nvs_sec_scheme_t **out);
-esp_err_t nvs_sec_provider_deregister(nvs_sec_scheme_t *scheme);
+nvs_sec_scheme_t *nvs_flash_get_default_security_scheme(void);
 esp_err_t nvs_flash_read_security_cfg_v2(nvs_sec_scheme_t *scheme, nvs_sec_cfg_t *config);
 esp_err_t nvs_flash_secure_init_partition(const char *name, nvs_sec_cfg_t *config);
 esp_err_t nvs_open_from_partition(const char *partition, const char *name, int mode, nvs_handle_t *handle);

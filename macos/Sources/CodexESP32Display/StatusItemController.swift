@@ -69,12 +69,20 @@ final class StatusItemController: NSObject {
         menu.addItem(dashboardItem)
 
         let copyItem = NSMenuItem(
-            title: "Copy Device Endpoint",
+            title: "Copy Local API Endpoint",
             action: #selector(copyEndpoint),
             keyEquivalent: ""
         )
         copyItem.target = self
         menu.addItem(copyItem)
+
+        let copyTokenItem = NSMenuItem(
+            title: "Copy Local Admin Token",
+            action: #selector(copyToken),
+            keyEquivalent: ""
+        )
+        copyTokenItem.target = self
+        menu.addItem(copyTokenItem)
 
         let logsItem = NSMenuItem(
             title: "Reveal Logs",
@@ -155,6 +163,10 @@ final class StatusItemController: NSObject {
 
     @objc private func copyEndpoint() {
         bridge.copyEndpoint()
+    }
+
+    @objc private func copyToken() {
+        bridge.copyToken()
     }
 
     @objc private func revealLogs() {

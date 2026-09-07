@@ -12,7 +12,7 @@ test('explicit admin migration rotates privately and preserves microphone/unrela
   const dir = await mkdtemp(join(tmpdir(), 'attention-migration-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'config.json');
-  const previous = { host: '0.0.0.0', token: 'old-compiled-admin-secret-12345', port: 5180,
+  const previous = { host: '0.0.0.0', token: 'abcdefghijklmnopqrstuvwxyz123456', port: 5180,
     codexHome: '/custom', attentionFilter: 'all', microphone: { keep: true } };
   await writeFile(path, JSON.stringify(previous));
   const env = { ...process.env, CODEX_ATTENTION_CONFIG: path };
@@ -48,7 +48,7 @@ test('legacy LAN host and URL do not become device/admin transport settings', as
   const dir = await mkdtemp(join(tmpdir(), 'attention-legacy-config-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'config.json');
-  await writeFile(path, JSON.stringify({ host: '0.0.0.0', token: 'test-admin-token-only-123456789',
+  await writeFile(path, JSON.stringify({ host: '0.0.0.0', token: 'abcdefghijklmnopqrstuvwxyz123456',
     bridgeUrl: 'http://old-lan/api/v1/attention', fallbackHost: '' }));
   const module = new URL('../src/config.mjs', import.meta.url).href;
   const { stdout } = await run(process.execPath, ['--input-type=module', '-e',

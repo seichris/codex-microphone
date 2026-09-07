@@ -1,7 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 5180,
-  "token": "GENERATE_WITH_NPM_RUN_SETUP",
+  "token": "GENERATED_BY_SETUP",
   "pollIntervalMs": 2000,
   "maxThreads": 300,
   "codexBin": "codex",

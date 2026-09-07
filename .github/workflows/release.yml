@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate tag, version, and tracked-file safety
+        run: |
+          python scripts/check_version.py --tag "$GITHUB_REF_NAME"
+          python scripts/check_no_secrets.py
+          python scripts/test_check_no_secrets.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - working-directory: bridge
+        run: npm ci
+      - working-directory: bridge
+        run: npm test
+      - working-directory: bridge
+        run: npm run check
+      - name: Test wireless provisioning
+        run: |
+          pip install esp-idf-kconfig==2.5.4
+          python scripts/test-wireless-provisioning.py
+
+  firmware:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build generic ESP32-S3 firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: esp32s3
+          path: firmware
+      - name: Assemble release firmware directory
+        run: |
+          version="$(cat VERSION)"
+          output="firmware-release"
+          mkdir -p "$output"
+          cp firmware/build/bootloader/bootloader.bin "$output/bootloader.bin"
+          cp firmware/build/partition_table/partition-table.bin "$output/partition-table.bin"
+          cp firmware/build/codex_esp32_display.bin "$output/codex_esp32_display.bin"
+          cat > "$output/flash_args" <<'EOF'
+          --flash_mode dio --flash_freq 80m --flash_size 16MB
+          0x0 bootloader.bin
+          0x10000 codex_esp32_display.bin
+          0x8000 partition-table.bin
+          EOF
+          cat > "$output/README.txt" <<EOF
+          Codex Microphone firmware $version (generic ESP32-S3 image)
+
+          This archive contains no Wi-Fi credentials, bridge token, or Wi-Fi
+          microphone pairing data. It is a generic smoke-test image. The
+          current firmware compiles those values into the image, so build
+          locally with firmware/sdkconfig.defaults and the provisioning
+          scripts for a connected board. The files and offsets above can be
+          passed to esptool.py write_flash.
+          EOF
+          (cd "$output" && sha256sum * > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-release
+          path: firmware-release
+          if-no-files-found: error
+
+  macos:
+    needs: validate
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Mac companion
+        run: ./macos/build_app.sh
+      - name: Verify and archive Mac companion
+        run: |
+          codesign --verify --deep --strict "macos/build/Codex ESP32 Display.app"
+          test ! -e "macos/build/Codex ESP32 Display.app/Contents/Resources/bridge/config.json"
+          zip_path="macos/build/Codex ESP32 Display-${GITHUB_REF_NAME#v}.zip"
+          ditto -c -k --keepParent "macos/build/Codex ESP32 Display.app" "$zip_path"
+          shasum -a 256 "$zip_path" > "macos/build/SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            macos/build/Codex ESP32 Display-*.zip
+            macos/build/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    needs: [firmware, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-release
+          path: firmware-release
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: macos-release
+      - name: Build release assets and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(cat VERSION)"
+          tag="$GITHUB_REF_NAME"
+          firmware_archive="codex-microphone-${version}-esp32s3.tar.gz"
+          tar -czf "$firmware_archive" -C firmware-release .
+          sha256sum "$firmware_archive" macos-release/*.zip > SHA256SUMS
+          cat > release-notes.md <<EOF
+          ## Codex Microphone ${version}
+
+          - Generic ESP32-S3 firmware archive: ${firmware_archive}
+          - Ad-hoc-signed Mac companion archive: Codex ESP32 Display-${version}.zip
+          - SHA-256 checksums: SHA256SUMS
+
+          Provision Wi-Fi, bridge, and pairing values locally before flashing.
+          See docs/releasing.md for the release and provisioning workflow.
+          EOF
+          gh release create "$tag" "$firmware_archive" macos-release/*.zip SHA256SUMS \
+            --verify-tag --title "Codex Microphone ${version}" --notes-file release-notes.md

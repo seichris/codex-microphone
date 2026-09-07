@@ -70,6 +70,7 @@ int main(int argc, char **argv)
     host_key_available = false;
     assert(attention_pairing_init() != ESP_OK && !attention_pairing_storage_ready());
     assert(host_nvs_writes == 0); // missing eFuse does not generate or erase anything
+    assert(nvs_flash_get_default_security_scheme()->nvs_flash_key_gen == NULL);
     reboot(); host_key_available = true;
     assert(attention_pairing_init() == ESP_OK);
     assert(attention_pairing_copy(&copy) == ESP_ERR_NOT_FOUND);
