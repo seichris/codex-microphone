@@ -1,6 +1,7 @@
 #include "wireless_microphone.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -550,10 +551,17 @@ static void stream_task(void *argument)
         }
         s_send_in_flight = true;
         unlock_state();
-        if (esp_websocket_client_send_bin(s_client, (const char *)packet, (int)packet_length,
-                                          pdMS_TO_TICKS(WIRELESS_SEND_TIMEOUT_MS)) != (int)packet_length) {
+        const int64_t send_started_ms = now_ms();
+        errno = 0;
+        const int send_result = esp_websocket_client_send_bin(s_client, (const char *)packet,
+            (int)packet_length, pdMS_TO_TICKS(WIRELESS_SEND_TIMEOUT_MS));
+        const int send_errno = errno;
+        if (send_result != (int)packet_length) {
+            char reason[64];
+            snprintf(reason, sizeof(reason), "audio send r=%d errno=%d t=%" PRId64 "ms",
+                send_result, send_errno, now_ms() - send_started_ms);
             xSemaphoreGive(s_send_lock);
-            fail_session("audio send failed");
+            fail_session(reason);
             continue;
         }
         if (lock_state(pdMS_TO_TICKS(20))) {

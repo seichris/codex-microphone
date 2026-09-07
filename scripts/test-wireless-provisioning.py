@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory(prefix="wireless-provision-test-") as directory
     config = tmp / "sdkconfig"
     config.write_text('CONFIG_CODEX_ATTENTION_WIFI_SSID="preserved"\n'
                       'CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y\n'
+                      '# CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK is not set\n'
                       'CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN="preserved-token"\n'
                       'CONFIG_CODEX_ATTENTION_WIRELESS_CREDENTIAL="old"\n'
                       '# CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_AUTO is not set\n'
@@ -34,6 +35,8 @@ with tempfile.TemporaryDirectory(prefix="wireless-provision-test-") as directory
     assert 'CONFIG_CODEX_ATTENTION_WIFI_SSID="preserved"' in config.read_text()
     assert 'CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN="preserved-token"' in config.read_text()
     assert 'CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y' in config.read_text()
+    assert 'CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y' in config.read_text()
+    assert '# CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK is not set' not in config.read_text()
     assert 'CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y' not in config.read_text()
     assert config.stat().st_mode & 0o777 == 0o600
     kconfig = kconfiglib.Kconfig(str(ROOT / "firmware/main/Kconfig.projbuild"), warn=False)

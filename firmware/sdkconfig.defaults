@@ -70,6 +70,8 @@ CONFIG_MBEDTLS_HAVE_TIME_DATE=y
 # Audio, USB, Wi-Fi and DMA already use internal RAM. TLS needs a contiguous
 # 16 KiB receive buffer plus its handshake allocations; use the board's PSRAM.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Incoming control reads must not hold the lock needed by 20 ms audio sends.
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
 CONFIG_CODEX_ATTENTION_VOICE_TRANSPORT_AUTO=y
 CONFIG_CODEX_ATTENTION_WIRELESS_URL=""
 CONFIG_CODEX_ATTENTION_WIRELESS_SERVER_NAME=""

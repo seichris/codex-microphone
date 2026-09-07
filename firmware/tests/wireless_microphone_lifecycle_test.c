@@ -19,6 +19,7 @@ static int64_t time_us;
 static bool gate;
 static bool close_during_read;
 static bool fail_read;
+static bool fail_send;
 static unsigned transient_read_timeouts;
 static bool acknowledge_stop;
 static unsigned binary_sends, cancels, websocket_starts;
@@ -79,6 +80,7 @@ int esp_websocket_client_send_text(esp_websocket_client_handle_t c, const char *
 }
 int esp_websocket_client_send_bin(esp_websocket_client_handle_t c, const char *data, int n, TickType_t ticks) {
     (void)c; (void)data; (void)ticks; ++binary_sends;
+    if (fail_send) { time_us += 100000; errno = ETIMEDOUT; return -1; }
     // Simulate an ACK callback before send_bin returns on the stream task.
     deliver("ack", s_next_sequence);
     s_streaming = false; return n;
@@ -104,6 +106,7 @@ static void setup(void) {
     lock_count = 0; time_us = 100000; wifi_ready = true; fake_clock = 1788739200; websocket_starts = 0; cancels = 0; binary_sends = 0;
     gate = true; close_during_read = false; fail_read = false; acknowledge_stop = false; transient_read_timeouts = 0;
     s_connected = true; s_authenticated = true; s_streaming = true; s_armed = true;
+    fail_send = false;
     s_pending_start = false; s_cancel_requested = false; s_failed_session = false;
     s_last_session_failure[0] = '\0';
     s_stopping = false; s_send_in_flight = false; s_have_ack = false;
@@ -144,6 +147,13 @@ int main(void) {
     wireless_microphone_get_status(bounded, sizeof(bounded));
     assert(bounded[7] == '\0');
     puts("PASS originating session failure survives reconnect and secondary failure");
+    setup(); fail_send = true;
+    stream_once();
+    assert(!gate && wireless_microphone_has_failed());
+    wireless_microphone_get_status(status, sizeof(status));
+    assert(strstr(status, "audio send r=-1 errno="));
+    assert(strstr(status, "t=100ms (frame 5)"));
+    puts("PASS send failure closes capture and retains transport timing");
     setup(); wifi_ready = false;
     if (setjmp(stream_exit) == 0) connection_task(NULL);
     assert(websocket_starts == 0);
