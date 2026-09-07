@@ -62,7 +62,7 @@ def check(root: Path, tag: str | None = None) -> list[str]:
     if f"codex-esp32-display/{version}" not in attention_client:
         errors.append("firmware/main/attention_client.c: user agent does not match VERSION")
 
-    if tag is None:
+    if tag is None and os.environ.get("GITHUB_REF_TYPE") == "tag":
         tag = os.environ.get("GITHUB_REF_NAME")
     if tag and tag != f"v{version}":
         errors.append(f"tag {tag!r} does not match v{version}")
