@@ -358,7 +358,9 @@ export class CodexAttentionService extends EventEmitter {
       ? {
           id: state.threadId,
           title: clampText(thread?.name || thread?.preview || 'Current Codex thread', 96),
-          project: projectName(typeof thread?.cwd === 'string' ? thread.cwd : ''),
+          project: state.focusConfidence === 'inferred'
+            ? clampText(`Device selected · ${projectName(typeof thread?.cwd === 'string' ? thread.cwd : '')}`, 96)
+            : projectName(typeof thread?.cwd === 'string' ? thread.cwd : ''),
           status: normalizeThreadStatus(thread?.status),
           updatedAt: Number(thread?.updatedAt ?? thread?.updated_at ?? 0) || 0,
           focusConfidence: state.focusConfidence,

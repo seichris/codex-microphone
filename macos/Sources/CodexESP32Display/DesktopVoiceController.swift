@@ -176,6 +176,9 @@ final class DesktopVoiceController: ObservableObject {
     }
 
     private var observedStatePayload: DesktopStatePayload {
+        // A device-issued exact-ID focus remains a valid device target even
+        // when several background subscriptions make Desktop events ambiguous.
+        if currentThreadId != nil { return statePayload }
         let selection = focusedTask.selection
         return DesktopStatePayload(
             threadId: selection.threadId,
@@ -244,6 +247,7 @@ final class DesktopVoiceController: ObservableObject {
     }
 
     private func focus(_ request: DesktopIPCRequest) async -> DesktopIPCResponse {
+        DictationDiagnostics.record("device-focus-requested")
         guard let threadId = request.threadId, Self.validThreadId(threadId) else {
             return failure(request.ipcId, "invalid_request", "Invalid thread ID.", 400)
         }
@@ -268,6 +272,7 @@ final class DesktopVoiceController: ObservableObject {
             voiceState = "muted"
         }
         currentThreadId = threadId
+        DictationDiagnostics.record("device-focus-opened")
         // Opening an exact-ID deep link is deterministic, but the public Desktop
         // surface does not expose a selected-thread acknowledgement.
         focusConfidence = "inferred"
