@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate tag, version, and tracked-file safety
+        run: |
+          python scripts/check_version.py --tag "$GITHUB_REF_NAME"
+          python scripts/check_no_secrets.py
+          python scripts/test_check_no_secrets.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - working-directory: bridge
+        run: npm ci
+      - working-directory: bridge
+        run: npm test
+      - working-directory: bridge
+        run: npm run check
+      - name: Test wireless provisioning
+        run: |
+          pip install esp-idf-kconfig==2.5.4
+          python scripts/test-wireless-provisioning.py
+
+  firmware:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build generic ESP32-S3 firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: esp32s3
+          path: firmware
+      - name: Assemble release firmware directory
+        run: |
+          version="$(cat VERSION)"
+          output="firmware-release"
+          mkdir -p "$output"
+          cp firmware/build/bootloader/bootloader.bin "$output/bootloader.bin"
+          cp firmware/build/partition_table/partition-table.bin "$output/partition-table.bin"
+          cp firmware/build/codex_esp32_display.bin "$output/codex_esp32_display.bin"
+          cat > "$output/flash_args" <<'EOF'
+          --flash_mode dio --flash_freq 80m --flash_size 16MB
+          0x0 bootloader.bin
+          0x10000 codex_esp32_display.bin
+          0x8000 partition-table.bin
+          EOF
+          cat > "$output/README.txt" <<EOF
+          Codex Microphone firmware $version (generic ESP32-S3 image)
+
+          This archive contains no Wi-Fi credentials, bridge token, or Wi-Fi
+          microphone pairing data. It is a generic smoke-test image. The
+          current firmware compiles those values into the image, so build
+          locally with firmware/sdkconfig.defaults and the provisioning
+          scripts for a connected board. The files and offsets above can be
+          passed to esptool.py write_flash.
+          EOF
+          (cd "$output" && sha256sum * > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-release
+          path: firmware-release
+          if-no-files-found: error
+
+  macos:
+    needs: validate
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require Apple release credentials
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
+        run: |
+          test -n "$APPLE_CERTIFICATE_BASE64"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$APPLE_SIGNING_IDENTITY"
+          test -n "$APPLE_API_KEY_BASE64"
+          test -n "$APPLE_API_KEY_ID"
+          test -n "$APPLE_ISSUER_ID"
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/codex-release.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+      - name: Build and sign Mac companion
+        env:
+          CODEX_DISPLAY_SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: ./macos/build_app.sh
+      - name: Verify signed app
+        run: |
+          codesign --verify --deep --strict "macos/build/Codex ESP32 Display.app"
+          test ! -e "macos/build/Codex ESP32 Display.app/Contents/Resources/bridge/config.json"
+          ditto -c -k --keepParent "macos/build/Codex ESP32 Display.app" \
+            "macos/build/Codex ESP32 Display-${GITHUB_REF_NAME#v}.zip"
+      - name: Notarize and staple Mac companion
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
+        run: |
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 -D > "$api_key_path"
+          zip_path="macos/build/Codex ESP32 Display-${GITHUB_REF_NAME#v}.zip"
+          xcrun notarytool submit "$zip_path" --key "$api_key_path" \
+            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_ISSUER_ID" --wait
+          xcrun stapler staple "macos/build/Codex ESP32 Display.app"
+          xcrun stapler validate "macos/build/Codex ESP32 Display.app"
+          codesign --verify --deep --strict "macos/build/Codex ESP32 Display.app"
+          spctl --assess --type execute --verbose=4 "macos/build/Codex ESP32 Display.app"
+          ditto -c -k --keepParent "macos/build/Codex ESP32 Display.app" "$zip_path"
+          shasum -a 256 "$zip_path" > "macos/build/SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            macos/build/Codex ESP32 Display-*.zip
+            macos/build/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    needs: [firmware, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-release
+          path: firmware-release
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: macos-release
+      - name: Build release assets and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(cat VERSION)"
+          tag="$GITHUB_REF_NAME"
+          firmware_archive="codex-microphone-${version}-esp32s3.tar.gz"
+          tar -czf "$firmware_archive" -C firmware-release .
+          sha256sum "$firmware_archive" macos-release/*.zip > SHA256SUMS
+          cat > release-notes.md <<EOF
+          ## Codex Microphone ${version}
+
+          - Generic ESP32-S3 firmware archive: ${firmware_archive}
+          - Notarized Mac companion archive: Codex ESP32 Display-${version}.zip
+          - SHA-256 checksums: SHA256SUMS
+
+          Provision Wi-Fi, bridge, and pairing values locally before flashing.
+          See docs/releasing.md for the release and provisioning workflow.
+          EOF
+          gh release create "$tag" "$firmware_archive" macos-release/*.zip SHA256SUMS \
+            --verify-tag --title "Codex Microphone ${version}" --notes-file release-notes.md

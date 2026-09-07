@@ -8,6 +8,20 @@ permissions:
   contents: read
 
 jobs:
+  secret-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check tracked files for credentials
+        run: python scripts/check_no_secrets.py
+      - name: Test the secret scanner
+        run: python scripts/test_check_no_secrets.py
+      - name: Check release version consistency
+        run: python scripts/check_version.py
+
   bridge:
     runs-on: ubuntu-latest
     steps:

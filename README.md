@@ -43,3 +43,5 @@ continue to use the same local project.
 Detailed implementation, architecture, API, security, and validation notes are in
 [Current software](docs/current-software.md). The [device protocol](docs/protocol.md)
 and [architecture notes](docs/architecture.md) remain available as references.
+For versioned firmware and Mac companion artifacts, see [release and CI
+operations](docs/releasing.md).

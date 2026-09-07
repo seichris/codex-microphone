@@ -224,7 +224,7 @@ export class CodexAppServerClient extends EventEmitter {
       clientInfo: {
         name: 'codex_esp32_display',
         title: 'Codex ESP32 Display',
-        version: '0.2.0',
+        version: '0.3.0',
       },
       capabilities: {
         experimentalApi: true,

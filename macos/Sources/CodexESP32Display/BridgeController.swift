@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import Security
 
 enum BridgeState: Equatable {
     case stopped
@@ -68,6 +69,7 @@ final class BridgeController: ObservableObject {
     let desktopVoiceController = DesktopVoiceController()
 
     private let bridgeRoot: URL
+    private let bridgeConfigURL: URL
     private var bridgeToken: String?
     private var process: Process?
     private var logHandle: FileHandle?
@@ -77,6 +79,7 @@ final class BridgeController: ObservableObject {
     init() {
         _ = FileManager.default.changeCurrentDirectoryPath("/tmp")
         bridgeRoot = Self.resolveBridgeRoot()
+        bridgeConfigURL = Self.resolveBridgeConfigURL()
         logURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/CodexESP32Display/bridge.log")
 
@@ -100,7 +103,17 @@ final class BridgeController: ObservableObject {
     func start() {
         guard process == nil else { return }
 
-        bridgeToken = Self.resolveBridgeToken(from: bridgeRoot)
+        do {
+            try Self.ensureBridgeConfig(
+                at: bridgeConfigURL,
+                legacyURL: Self.legacyBridgeConfigURL(for: bridgeRoot)
+            )
+            bridgeToken = try Self.resolveBridgeToken(from: bridgeConfigURL)
+        } catch {
+            state = .failed("bridge configuration unavailable: \(error.localizedDescription)")
+            health = .unavailable
+            return
+        }
 
         let bridgeEntry = bridgeRoot.appendingPathComponent("bridge/src/index.mjs")
         guard FileManager.default.fileExists(atPath: bridgeEntry.path) else {
@@ -136,9 +149,7 @@ final class BridgeController: ObservableObject {
             environment["PATH"] = pathEntries.joined(separator: ":")
             environment["PWD"] = "/tmp"
             environment["OLDPWD"] = "/tmp"
-            environment["CODEX_ATTENTION_CONFIG"] = bridgeRoot
-                .appendingPathComponent("bridge/config.json")
-                .path
+            environment["CODEX_ATTENTION_CONFIG"] = bridgeConfigURL.path
             if let codexURL = Self.resolveCodex() {
                 environment["CODEX_BIN"] = codexURL.path
             }
@@ -200,6 +211,13 @@ final class BridgeController: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(endpoint.absoluteString, forType: .string)
+    }
+
+    func copyToken() {
+        guard let bridgeToken, !bridgeToken.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(bridgeToken, forType: .string)
     }
 
     func revealLogs() {
@@ -296,19 +314,115 @@ final class BridgeController: ObservableObject {
         return URL(fileURLWithPath: fileManager.currentDirectoryPath).standardizedFileURL
     }
 
-    private static func resolveBridgeToken(from bridgeRoot: URL) -> String? {
-        if let environmentToken = ProcessInfo.processInfo.environment["CODEX_ATTENTION_TOKEN"] {
-            return environmentToken.isEmpty ? nil : environmentToken
+    private static func resolveBridgeConfigURL() -> URL {
+        let fileManager = FileManager.default
+        if let configured = ProcessInfo.processInfo.environment["CODEX_ATTENTION_CONFIG"],
+           !configured.isEmpty {
+            return URL(fileURLWithPath: configured).standardizedFileURL
+        }
+        let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return applicationSupport
+            .appendingPathComponent("Codex ESP32 Display", isDirectory: true)
+            .appendingPathComponent("bridge-config.json")
+    }
+
+    private static func legacyBridgeConfigURL(for bridgeRoot: URL) -> URL {
+        bridgeRoot.appendingPathComponent("bridge/config.json")
+    }
+
+    private static func ensureBridgeConfig(at configURL: URL, legacyURL: URL?) throws {
+        let fileManager = FileManager.default
+        let hasExplicitConfig = !(ProcessInfo.processInfo.environment["CODEX_ATTENTION_CONFIG"] ?? "").isEmpty
+
+        if fileManager.fileExists(atPath: configURL.path) {
+            if ProcessInfo.processInfo.environment["CODEX_ATTENTION_TOKEN"] == nil {
+                _ = try readBridgeToken(from: configURL)
+            }
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+            return
         }
 
-        let configURL = bridgeRoot.appendingPathComponent("bridge/config.json")
-        guard let data = try? Data(contentsOf: configURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        if hasExplicitConfig {
+            throw NSError(
+                domain: "CodexESP32Display.BridgeConfiguration",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "configured bridge config was not found"]
+            )
+        }
+
+        // Older local app builds embedded this file. Migrate it once when it
+        // is available, while keeping release bundles free of credentials.
+        if let legacyURL,
+           let data = try? Data(contentsOf: legacyURL),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let token = object["token"] as? String,
+           token.count >= 24 {
+            try writePrivateConfig(data, to: configURL)
+            return
+        }
+
+        let token = try makeBridgeToken()
+        let object: [String: Any] = [
+            "host": "0.0.0.0",
+            "port": 5180,
+            "token": token,
+            "pollIntervalMs": 2000,
+            "maxThreads": 300,
+            "maxItems": 30,
+            "attentionFilter": "unread+pinned",
+            "codexBin": "codex",
+            "codexHome": "~/.codex",
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try writePrivateConfig(data, to: configURL)
+    }
+
+    private static func writePrivateConfig(_ data: Data, to configURL: URL) throws {
+        let fileManager = FileManager.default
+        let directory = configURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try data.write(to: configURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+    }
+
+    private static func readBridgeToken(from configURL: URL) throws -> String {
+        let data = try Data(contentsOf: configURL)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = object["token"] as? String,
-              !token.isEmpty else {
-            return nil
+              token.count >= 24 else {
+            throw NSError(
+                domain: "CodexESP32Display.BridgeConfiguration",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "bridge config has no valid token"]
+            )
         }
         return token
+    }
+
+    private static func resolveBridgeToken(from configURL: URL) throws -> String {
+        if let environmentToken = ProcessInfo.processInfo.environment["CODEX_ATTENTION_TOKEN"],
+           !environmentToken.isEmpty {
+            return environmentToken
+        }
+        return try readBridgeToken(from: configURL)
+    }
+
+    private static func makeBridgeToken() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw NSError(
+                domain: "CodexESP32Display.BridgeConfiguration",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "could not generate a bridge token"]
+            )
+        }
+        return Data(bytes)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     private static func resolveNode() -> URL? {
