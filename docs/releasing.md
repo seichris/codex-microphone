@@ -13,7 +13,7 @@ The release workflow builds two generic artifacts:
   no Wi-Fi credentials, bridge token, pairing credential, or private key.
 
 The firmware archive is intentionally generic. Attention Wi-Fi and bridge
-credentials are now provisioned at runtime over a physically confirmed UART0
+credentials are now provisioned at runtime over a physically confirmed USB CDC
 connection; they are not compiled into the image. Secure pairing storage still
 requires the separately owner/factory-provisioned HMAC key described in
 [attention pairing](attention-pairing.md), and physical qualification is a release

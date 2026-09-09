@@ -10,7 +10,8 @@
 #include <string.h>
 #include "cJSON.h"
 #include "driver/gpio.h"
-#include "driver/uart.h"
+#include "tusb.h"
+#include <stdarg.h>
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -28,15 +29,34 @@ static attention_confirmation_t s_confirmation;
 static attention_pairing_record_t *s_pending;
 static action_t s_action;
 static bool s_busy;
-static bool s_serial_ready;
 static char s_candidate[33];
+
+// Only the provisioning actor writes CDC replies. Never route credentials or
+// arbitrary console output to USB; writes and flushes have a bounded deadline.
+static void usb_reply(const char *format, ...)
+{
+    char output[512];
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(output, sizeof(output), format, args);
+    va_end(args);
+    if (length <= 0 || length >= (int)sizeof(output)) return;
+    size_t sent = 0;
+    const int64_t deadline = esp_timer_get_time() + 1000000;
+    while (tud_inited() && tud_cdc_connected() && esp_timer_get_time() < deadline) {
+        if (sent < (size_t)length)
+            sent += tud_cdc_write(output + sent, (size_t)length - sent);
+        tud_cdc_write_flush();
+        if (sent == (size_t)length && tud_cdc_write_available() == CFG_TUD_CDC_TX_BUFSIZE) break;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
 
 static void reply(const char *result)
 {
     // The serial input is never echoed. Only these bounded, non-secret replies
     // reach the console; credentials must never be formatted through ESP_LOG.
-    printf(SERIAL_PREFIX "{\"version\":1,\"result\":\"%s\"}\n", result);
-    fflush(stdout);
+    usb_reply(SERIAL_PREFIX "{\"version\":1,\"result\":\"%s\"}\n", result);
 }
 
 static void status(const char *message, bool failed)
@@ -123,13 +143,12 @@ static void hello(void)
     attention_pairing_record_t *record = calloc(1, sizeof(*record));
     if (record == NULL) { reply("no_memory"); return; }
     const esp_err_t result = attention_pairing_copy(record);
-    printf(SERIAL_PREFIX "{\"version\":1,\"result\":\"hello\",\"storageReady\":%s,\"state\":%lu,"
+    usb_reply(SERIAL_PREFIX "{\"version\":1,\"result\":\"hello\",\"storageReady\":%s,\"state\":%lu,"
         "\"deviceId\":\"%s\",\"bridgeId\":\"%s\",\"candidateId\":\"%s\",\"resetNonce\":\"%s\"}\n",
         attention_pairing_storage_ready() ? "true" : "false",
         (unsigned long)(result == ESP_OK ? record->state : ATTENTION_PAIRING_EMPTY),
         result == ESP_OK ? record->device_id : "", result == ESP_OK ? record->bridge_id : "", s_candidate,
         result == ESP_OK && record->state == ATTENTION_PAIRING_RESETTING ? record->reset_nonce : "");
-    fflush(stdout);
     attention_pairing_zero(record, sizeof(*record));
     free(record);
 }
@@ -220,7 +239,6 @@ static void complete_action(void)
     else if (action == ACTION_PAIR) {
         reply("paired");
         status("Pairing saved. Restarting", false);
-        uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(1000));
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();
     } else { reply("reset_pending"); hello(); status("Reset pending bridge revocation", false); }
@@ -240,21 +258,34 @@ static void serial_task(void *argument)
     size_t length = 0;
     bool discard = false;
     int64_t last_byte = 0;
+    bool connected = false;
     while (true) {
         // This actor uses an INTERNAL stack: NVS writes must not run on the
         // PSRAM-backed network poll task, even when reset arrived over HTTPS.
         if (attention_pairing_process_reset_ack() == ESP_OK) { new_candidate(); reply("reset_complete"); }
+        const bool now_connected = tud_inited() && tud_cdc_connected();
+        if (connected != now_connected) {
+            // A reconnect must not complete a previous host's partial request
+            // or inherit its unconfirmed pairing prompt.
+            attention_pairing_zero(line, SERIAL_LIMIT + 1);
+            length = 0;
+            discard = false;
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            if (s_busy) s_confirmation.phase = ATTENTION_CONFIRM_CANCELLED;
+            xSemaphoreGive(s_lock);
+            connected = now_connected;
+        }
         complete_action();
-        if (!s_serial_ready) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+        if (!connected) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
         uint8_t byte;
-        const int count = uart_read_bytes(UART_NUM_0, &byte, 1, pdMS_TO_TICKS(20));
+        const int count = tud_cdc_read(&byte, 1);
         const int64_t now = esp_timer_get_time();
         if (length && now - last_byte > 5LL * 1000000) {
             attention_pairing_zero(line, SERIAL_LIMIT + 1);
             length = 0;
             discard = true;
         }
-        if (count != 1) continue;
+        if (count != 1) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
         last_byte = now;
         if (byte == '\n') {
             if (!discard && length) {
@@ -277,17 +308,9 @@ esp_err_t attention_provisioning_start(void)
     s_lock = xSemaphoreCreateMutex();
     if (s_lock == NULL) return ESP_ERR_NO_MEM;
     new_candidate();
-    // UART0 maintenance channel, not the native TinyUSB UAC port. This keeps
-    // the existing USB microphone descriptors and audio path unchanged.
-    const uart_config_t config = { .baud_rate = 115200, .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE, .stop_bits = UART_STOP_BITS_1, .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT };
-    esp_err_t result = uart_param_config(UART_NUM_0, &config);
-    if (result == ESP_OK && !uart_is_driver_installed(UART_NUM_0))
-        result = uart_driver_install(UART_NUM_0, 4096, 0, 0, NULL, 0);
-    s_serial_ready = result == ESP_OK;
-    // Keep the reset-persistence actor alive even if the maintenance UART is
+    // USB microphone initialization owns the shared TinyUSB stack and PHY.
+    // Keep the reset-persistence actor alive even if the USB connection is
     // unavailable. A confirmed pending reset can still finish over the LAN.
     if (xTaskCreate(serial_task, "attention_pair", 8192, NULL, 4, NULL) != pdPASS) return ESP_ERR_NO_MEM;
-    return result;
+    return ESP_OK;
 }

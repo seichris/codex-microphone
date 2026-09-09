@@ -41,6 +41,7 @@ idf_component_register(
         nvs_sec_provider
         mdns
         usb_device_uac
+        espressif__tinyusb
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

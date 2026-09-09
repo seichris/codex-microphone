@@ -98,3 +98,20 @@ config CODEX_ATTENTION_WIRELESS_DEVICE_ID
     default "CESP32VOICE01"
 
 endmenu
+if USB_DEVICE_UAC_AS_PART
+config UAC_TUSB_VID
+    hex "Composite USB vendor ID"
+    default 0x303A
+config UAC_TUSB_PID
+    hex "Composite USB product ID"
+    default 0x8000
+config UAC_TUSB_MANUFACTURER
+    string "Composite USB manufacturer"
+    default "Codex ESP32 Display"
+config UAC_TUSB_PRODUCT
+    string "Composite USB product"
+    default "Waveshare Voice Microphone"
+config UAC_TUSB_SERIAL_NUM
+    string "Composite USB serial number"
+    default "CESP32VOICE01"
+endif

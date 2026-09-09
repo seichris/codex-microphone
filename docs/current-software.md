@@ -93,7 +93,7 @@ Open the browser dashboard:
 http://127.0.0.1:5180/
 ```
 
-ESP32 devices pair through the physically confirmed UART0 flow and use runtime
+ESP32 devices pair through the physically confirmed USB CDC flow and use runtime
 Bonjour discovery plus certificate-verified HTTPS on port 5182. No LAN IP or
 shared bearer is compiled into attention firmware. Follow
 [secure attention pairing](attention-pairing.md), including the one-time owner

@@ -36,10 +36,10 @@ continue to use the same local project.
 
 - **Prepare and pair the board once:** follow [secure attention pairing](docs/attention-pairing.md)
   for the initial firmware/partition update, owner-provisioned HMAC storage key,
-  and physically confirmed UART0 pairing. Wi-Fi, bridge trust and device identity
+  and physically confirmed USB CDC pairing. Wi-Fi, bridge trust and device identity
   are stored in encrypted NVS; do not embed an attention URL or token in firmware.
   Routine reconnects, DHCP changes, bridge restarts and token renewal need no rebuild.
-  Native USB remains the microphone interface, not the maintenance serial port.
+  The native USB-C cable carries both the microphone and the pairing serial interface.
 - **Enable paired Wi-Fi dictation (optional):** create and provision a pairing
   bundle with the scripts described in [macOS pairing instructions](macos/README.md#pairing-the-wi-fi-microphone).
 - **Run the Mac companion (optional):** use `./macos/build_app.sh`, open the

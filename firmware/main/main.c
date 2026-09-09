@@ -569,12 +569,14 @@ void app_main(void)
     show_startup_status("Starting microphone", false);
     ESP_ERROR_CHECK(button_input_init());
     esp_err_t audio_result = voice_audio_init();
-    if (audio_result == ESP_OK) {
+    {
+        // CDC provisioning must work even if the microphone codec is unavailable.
         esp_err_t usb_result = usb_microphone_init();
         if (usb_result != ESP_OK) {
             ESP_LOGW(TAG, "USB microphone disabled: %s", esp_err_to_name(usb_result));
         }
-    } else {
+    }
+    if (audio_result != ESP_OK) {
         ESP_LOGW(TAG, "Voice microphone disabled: %s", esp_err_to_name(audio_result));
     }
     audio_result = attention_audio_init();

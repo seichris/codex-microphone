@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Physically confirmed attention pairing over UART0; never flash or burn eFuses."""
+"""Physically confirmed attention pairing over native USB-C; never burn eFuses."""
 from __future__ import annotations
 
 import argparse
@@ -75,6 +75,15 @@ class LocalAdmin:
             raise PairingError("Paired local bridge unavailable or returned an invalid response.") from None
 
 
+def select_usb_port(ports) -> str:
+    candidates = [p.device for p in ports
+                  if p.manufacturer == "Codex ESP32 Display"
+                  and (p.interface in (None, "Attention pairing"))]
+    if len(candidates) != 1:
+        raise PairingError("Connect one USB-C board running USB pairing firmware, or select its CDC port with --port.")
+    return candidates[0]
+
+
 class DeviceSerial:
     def __init__(self, port: str) -> None:
         try:
@@ -85,12 +94,14 @@ class DeviceSerial:
         self.discard = False
         try:
             self.stream = serial.Serial(port=None, baudrate=115200, timeout=0.1, write_timeout=2)
-            self.stream.dtr = False
+            # The application CDC interface uses DTR to mark a pairing session.
+            # This is not the ESP ROM downloader; RTS stays deasserted.
+            self.stream.dtr = True
             self.stream.rts = False
             self.stream.port = port
             self.stream.open()
         except (OSError, serial.SerialException):
-            raise PairingError("Cannot open the UART0 maintenance port. Check the 3.3 V USB-UART connection.") from None
+            raise PairingError("Cannot open the USB pairing port. Connect USB-C and start the application firmware.") from None
 
     def close(self) -> None:
         self.stream.close()
@@ -132,7 +143,7 @@ class DeviceSerial:
             if code not in {"hello", "confirm_on_device"}:
                 # Do not echo arbitrary data from a serial peer into the terminal.
                 raise PairingError("Device rejected or cancelled the pairing operation. Check its display and retry.")
-        raise PairingError("No confirmed device reply. Check its display and UART0 connection; no reset is assumed complete.")
+        raise PairingError("No confirmed device reply. Check its display and USB-C connection; no reset is assumed complete.")
 
     def hello(self) -> dict:
         self.send({"command": "hello"})
@@ -214,7 +225,8 @@ def enroll(device: DeviceSerial, admin: LocalAdmin, info: dict, *, replace: bool
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", required=True, help="UART0 USB-UART serial device (not the native USB microphone)")
+    parser.add_argument("--port", help="USB CDC port; automatically detected when one board is connected")
+    parser.add_argument("--status", action="store_true", help="Read USB pairing and secure-storage status without changing the device")
     parser.add_argument("--config", type=Path, default=Path(os.environ.get("CODEX_ATTENTION_CONFIG", ROOT / "bridge/config.json")))
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--reset", action="store_true", help="Physically confirm reset and revoke the old credential")
@@ -222,8 +234,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     device = None
     try:
-        device = DeviceSerial(args.port)
+        port = args.port
+        if port is None:
+            try:
+                from serial.tools.list_ports import comports
+            except ImportError:
+                raise PairingError("Install scripts/requirements-attention.txt to detect USB boards.") from None
+            port = select_usb_port(comports())
+        device = DeviceSerial(port)
         info = device.hello()
+        if args.status:
+            print(json.dumps({key: info.get(key) for key in ("storageReady", "state", "deviceId", "bridgeId")}))
+            return 0
         if info.get("storageReady") is not True:
             raise PairingError("Secure storage unavailable. Complete the one-time owner HMAC-key provisioning in docs/attention-pairing.md; nothing was erased or burned.")
         admin = LocalAdmin(args.config)

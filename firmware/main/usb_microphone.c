@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "usb_device_uac.h"
 #include "voice_audio.h"
+#include "usb/usb_interfaces.h"
 
 static const char *TAG = "usb_microphone";
 static atomic_int_fast64_t s_last_host_request_us;
@@ -42,6 +43,7 @@ esp_err_t usb_microphone_init(void)
         .set_mute_cb = host_mute_changed,
         .set_volume_cb = NULL,
         .cb_ctx = NULL,
+        .mic_itf_num = ITF_NUM_AUDIO_STREAMING_MIC,
     };
     esp_err_t result = uac_device_init(&config);
     if (result == ESP_OK) {

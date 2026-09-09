@@ -48,13 +48,17 @@ Protect backups and do not roll back revocation state from an old backup.
 
 ## Pair once
 
-The authenticated local transport is a physically connected **UART0 maintenance
-channel**, separate from the native USB microphone. Use a 3.3 V USB-UART adapter
-with a common ground, adapter RX to ESP32 UART0 TX, and adapter TX to UART0 RX.
-The ESP32-S3 default UART0 pins are GPIO43/TX and GPIO44/RX; verify access and
-routing against the exact Waveshare board revision before connecting. Never
-apply 5 V to these GPIOs. The existing USB-C UAC interface is not a serial port
-and its descriptors have not been changed by this implementation.
+Connect the board's **native USB-C port** to the Mac with a data cable. The
+application exposes a composite USB device: the existing microphone plus an
+"Attention pairing" CDC serial interface. No GPIO wiring or USB-UART adapter is
+needed. The ROM download port is only for flashing; boot the application before
+pairing.
+
+Run `python3 scripts/pair-attention.py --status` to check the USB channel and
+secure-storage readiness without entering credentials. The CLI detects one board
+automatically; use `--port /dev/cu.usbmodemEXAMPLE` if multiple boards are present.
+A `storageReady: false` result still requires the owner HMAC-key prerequisite above.
+Changing the USB transport does not provision that irreversible key.
 
 From the repository root:
 
@@ -69,7 +73,7 @@ Do not run two bridge instances against the same store. In another terminal:
 
 ```sh
 cd bridge
-npm run pair -- --port /dev/cu.usbserial-EXAMPLE
+npm run pair -- --port /dev/cu.usbmodemEXAMPLE
 ```
 
 The packaged Mac companion instead creates its config at
@@ -80,7 +84,7 @@ its config for pairing, reset, replacement, or admin rotation:
 ```sh
 export CODEX_ATTENTION_CONFIG="$HOME/Library/Application Support/Codex ESP32 Display/bridge-config.json"
 cd bridge
-npm run pair -- --port /dev/cu.usbserial-EXAMPLE
+npm run pair -- --port /dev/cu.usbmodemEXAMPLE
 ```
 
 Use the same config for every operation; selecting another bridge's config is
@@ -89,7 +93,7 @@ owner/dashboard access, not a device credential.
 
 The CLI reads the local administrative credential from the owner-only config,
 prompts for Wi-Fi credentials (password input is hidden), obtains the Mac's
-identity/trust anchor over loopback, and sends them directly through UART0.
+identity/trust anchor over loopback, and sends them directly through USB CDC.
 It prints the **public** bridge ID and certificate SHA-256, never a Wi-Fi
 password, device secret, admin token, or credential-bearing URL.
 
@@ -97,6 +101,9 @@ Check the Mac identity shown on the device. Release BOOT, then make a **fresh
 1.5-second BOOT hold**. A button held before the prompt is not confirmation;
 PWR cancels and the prompt expires after 60 seconds. Recording is revoked while
 the prompt is active. Only confirmation permits the sealed record to be written.
+Disconnecting USB or closing the CDC session cancels an unconfirmed request and
+clears partial input. Microphone audio remains a separate USB interface; recording
+is revoked while the confirmation prompt is open.
 The device acknowledges the committed record and restarts. An interrupted or
 lost acknowledgement can be retried without issuing a second device identity.
 
@@ -118,8 +125,8 @@ itself also depends on mDNS, so use ordinary DNS when multicast is unavailable.
 ## Reset, re-pair, and revocation
 
 ```sh
-npm run pair -- --port /dev/cu.usbserial-EXAMPLE --reset
-npm run pair -- --port /dev/cu.usbserial-EXAMPLE --replace
+npm run pair -- --port /dev/cu.usbmodemEXAMPLE --reset
+npm run pair -- --port /dev/cu.usbmodemEXAMPLE --replace
 ```
 
 Reset requires another fresh device confirmation. It first atomically records
@@ -132,7 +139,7 @@ the credential generation and revokes competing pending replacements.
 
 **Offline reset is pending, not complete.** Reconnect the original Mac/LAN, or
 use the CLI on the original Mac to relay its authenticated revocation ACK over
-UART0. Power loss retains the pending nonce. Repeating the ACK is safe. A new or
+USB CDC. Power loss retains the pending nonce. Repeating the ACK is safe. A new or
 impersonating Mac cannot forge completion. If the original Mac's pairing store
 is permanently lost, this flow cannot establish revocation on that lost Mac;
 owner-controlled recovery is required rather than falsely reporting success.
@@ -159,7 +166,7 @@ listener to loopback, preserves unrelated configuration, and prints no secret.
 Remove an old `CODEX_ATTENTION_TOKEN` environment override as well, or it will
 continue to override the newly generated config token. Restart the bridge and
 companion, update firmware/partition table once, satisfy the owner key
-prerequisite, and pair through UART0 as above.
+prerequisite, and pair through USB CDC as above.
 
 `CONFIG_CODEX_ATTENTION_BRIDGE_URL` and `CONFIG_CODEX_ATTENTION_BRIDGE_TOKEN` are
 retained only as explicitly ignored migration settings. They are never used by
@@ -239,7 +246,7 @@ reply. These are not measurements of ESP-IDF's TLS/NVS stack or board hardware.
 
 Physical release gate — **not completed by host tests**:
 
-- [ ] Verify exact board UART routing, secure-key provisioning, partition update,
+- [ ] Verify composite USB enumeration, secure-key provisioning, partition update,
       memory headroom and confirmation/cancellation with USB audio active.
 - [ ] Pair once; cold boot repeatedly and reconnect without rebuilding firmware.
 - [ ] Change real DHCP address/router configuration; restart/kill the Mac bridge;

@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("pair_attention", Path(__file__).with_name("pair-attention.py"))
@@ -27,6 +28,23 @@ def reader(chunks):
 
 
 class ProvisioningTests(unittest.TestCase):
+    def test_usb_auto_detection_excludes_rom_and_other_devices(self):
+        board = SimpleNamespace(device="/dev/cu.usbmodem42", manufacturer="Codex ESP32 Display", interface="Attention pairing")
+        rom = SimpleNamespace(device="/dev/cu.usbmodem43", manufacturer="Espressif", interface=None)
+        self.assertEqual(module.select_usb_port([rom, board]), board.device)
+        for ports in ([], [rom], [board, board]):
+            with self.assertRaises(module.PairingError):
+                module.select_usb_port(ports)
+
+    def test_status_can_read_unprepared_board_without_admin_or_credentials(self):
+        class Device:
+            def __init__(self, port): self.port = port
+            def hello(self): return {"storageReady": False, "state": 0}
+            def close(self): pass
+        with patch.object(module, "DeviceSerial", Device), patch.object(module, "LocalAdmin", side_effect=AssertionError("no admin calls")), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(module.main(["--port", "/dev/cu.test", "--status"]), 0)
+        self.assertFalse(json.loads(output.getvalue())["storageReady"])
+
     def test_full_width_ssid_psk_and_utf8(self):
         self.assertEqual(module.wifi_credentials("s" * 32, "A" * 64), ("s" * 32, "A" * 64))
         self.assertEqual(module.wifi_credentials("测试", "password"), ("测试", "password"))

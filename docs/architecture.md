@@ -93,7 +93,7 @@ monotonic `wirelessSession` summary. The bridge never carries the PCM stream.
 - `attention_client`: list/detail parsers over `attention_connection`, a serialized
   paired HTTPS client with a 64 KiB hard response ceiling.
 - `attention_pairing`: versioned, HMAC-sealed encrypted NVS record and reset state.
-- `attention_provisioning`: separate UART0 local channel and internal-stack flash
+- `attention_provisioning`: separate USB CDC local channel and internal-stack flash
   writer; `attention_confirmation` requires a fresh physical BOOT hold.
 - `attention_ui`: LVGL list, persistent selection, and scrollable detail view.
 - `button_input`: debounced BOOT/GPIO0 plus AXP2101 PWR short-press polling.
