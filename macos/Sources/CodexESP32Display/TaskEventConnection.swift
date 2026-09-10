@@ -128,6 +128,7 @@ final class TaskEventConnection {
             diagnostic.appCount = 1
             diagnostic.trusted = true // Verified broker peer, not AX permission.
             diagnostic.candidates = state.candidateCount
+            diagnostic.uniqueCandidates = state.uniqueCandidateCount
             diagnostic.candidateTasks = state.candidateTasks
             update(result.0, diagnostic)
         }

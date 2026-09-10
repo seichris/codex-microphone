@@ -150,6 +150,9 @@ The report separates App Server running/waiting states from the companion's
 selected target and stream-following candidates. It lists task IDs, titles
 when available, host IDs and originating client IDs. Multiple entries may
 refer to the same task. A stream candidate is not proof of keyboard focus.
+Selection deduplicates by host and task ID; per-client entries are retained for
+disconnect handling. Different tasks or hosts remain ambiguous. The report
+shows both the number of client entries and the number of unique candidates.
 Unknown titles/statuses remain unknown; stale observer data is explicitly marked.
 Run states are the bridge App Server's observations, not a guaranteed global
 inventory of turns running in other Codex clients. An empty running list does

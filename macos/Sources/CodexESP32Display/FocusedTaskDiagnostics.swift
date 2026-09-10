@@ -17,6 +17,7 @@ struct FocusedTaskDiagnostic: Equatable, Codable {
     var visited = 0
     var webAreas = 0
     var candidates = 0
+    var uniqueCandidates = 0
     var candidateTasks: [TaskCandidateDiagnostic] = []
     var elapsedMilliseconds = 0
 

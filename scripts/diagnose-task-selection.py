@@ -35,6 +35,7 @@ def report(snapshot, diagnostic):
         'selectionNote': 'A device-selected target or stream-derived candidate is not proof of keyboard focus.',
         'observerReason': diagnostic.get('reason'),
         'candidateCount': diagnostic.get('candidates'),
+        'uniqueCandidateCount': diagnostic.get('uniqueCandidates'),
         'candidateTasks': candidates,
         'runningTasks': [task for task in tasks.values() if task['status'] == 'running'],
         'waitingTasks': [task for task in tasks.values() if task['status'] in ('waiting_input', 'waiting_approval')],

@@ -34,12 +34,40 @@ final class TaskEventStateTests: XCTestCase {
         try state.apply(event(a, true, source: other), at: now)
         XCTAssertEqual(state.candidateTasks.map(\.threadId), [a, a])
         XCTAssertEqual(state.candidateTasks.map(\.clientId), [client, other])
-        XCTAssertEqual(state.result(at: now.addingTimeInterval(1)).1, "events-ambiguous")
+        XCTAssertEqual(state.candidateCount, 2)
+        XCTAssertEqual(state.uniqueCandidateCount, 1)
+        XCTAssertEqual(result(state).threadId, a)
         try state.apply(event(a, false, source: other), at: now)
         XCTAssertEqual(state.candidateTasks.count, 1)
         XCTAssertEqual(result(state).threadId, a)
         try state.apply(event(b, true), at: now)
         XCTAssertEqual(state.candidateTasks.map(\.threadId), [a, b])
+        XCTAssertNil(result(state).threadId)
+    }
+
+    func testDuplicateClientDisconnectAndSwitchKeepOwnership() throws {
+        var state = TaskEventState(at: now)
+        try state.apply(event(a, true), at: now)
+        try state.apply(event(a, true, source: other), at: now)
+        let disconnect = try JSONSerialization.data(withJSONObject: ["type": "broadcast", "method": "client-status-changed",
+            "version": 0, "params": ["clientId": other, "status": "disconnected"]])
+        try state.apply(disconnect, at: now)
+        XCTAssertEqual(state.candidateCount, 1)
+        XCTAssertEqual(result(state).threadId, a)
+        try state.apply(event(b, true, source: other), at: now)
+        XCTAssertEqual(state.uniqueCandidateCount, 2)
+        XCTAssertEqual(state.result(at: now.addingTimeInterval(1)).1, "events-ambiguous")
+        try state.apply(event(a, false), at: now)
+        XCTAssertEqual(result(state).threadId, b)
+        try state.apply(disconnect, at: now)
+        XCTAssertEqual(result(state).status, .noTask)
+    }
+
+    func testSameTaskOnDifferentHostsRemainsAmbiguous() throws {
+        var state = TaskEventState(at: now)
+        try state.apply(event(a, true), at: now)
+        try state.apply(event(a, true, source: other, host: "remote-host"), at: now)
+        XCTAssertEqual(state.uniqueCandidateCount, 2)
         XCTAssertNil(result(state).threadId)
     }
 
