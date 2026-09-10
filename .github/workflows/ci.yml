@@ -53,6 +53,7 @@ jobs:
       - name: Test the real provisioning CLI and production firmware against the HTTPS bridge
         run: |
           python scripts/test-attention-provisioning.py
+          python scripts/test-task-selection-diagnostics.py
           python firmware/tests/run_attention_pairing_tests.py
           python firmware/tests/run_wifi_manager_tests.py
           python firmware/tests/run_voice_audio_tests.py
