@@ -92,6 +92,23 @@ export class CodexAttentionService extends EventEmitter {
   get connected() { return this.#client?.ready === true; }
   get desktopStatePath() { return this.#desktop.path; }
 
+  taskDiagnostics() {
+    // Run state comes from App Server, not from foreground-selection events.
+    return {
+      generatedAt: this.#snapshot.generatedAt,
+      connected: this.connected,
+      sourceError: this.#sourceError,
+      runStateSource: 'bridge-app-server; not a desktop-global running-task inventory',
+      selection: this.#snapshot.currentThread ? { ...this.#snapshot.currentThread } : null,
+      tasks: this.#lastThreads.map(thread => ({
+        id: thread.id,
+        title: clampText(thread.name || 'Untitled task', 160),
+        status: thread.status == null || thread.status?.type === 'notLoaded'
+          ? 'unknown' : normalizeThreadStatus(thread.status),
+      })),
+    };
+  }
+
   async desktopState() {
     await this.#refreshDesktopControlState();
     this.#decorateSnapshot();

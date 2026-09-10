@@ -80,6 +80,13 @@ struct TaskEventState {
     }
 
     var candidateCount: Int { clients.values.reduce(0) { $0 + $1.count } }
+    var candidateTasks: [TaskCandidateDiagnostic] {
+        clients.flatMap { client, targets in
+            targets.map { TaskCandidateDiagnostic(threadId: $0.id, hostId: $0.host, clientId: client) }
+        }.sorted {
+            ($0.hostId, $0.threadId, $0.clientId) < ($1.hostId, $1.threadId, $1.clientId)
+        }
+    }
     func result(at now: Date = Date()) -> (FocusedTaskSelection, String) {
         guard now >= settleUntil else { return (.unavailable(at: now), "events-settling") }
         guard candidateCount <= 1 else { return (.unavailable(at: now), "events-ambiguous") }

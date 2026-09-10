@@ -182,6 +182,11 @@ export function createBridgeServer({ service, token, authority, device = false, 
         throw authError('invalid_request', 400);
       }
 
+      if (!device && request.method === 'GET' && url.pathname === '/api/v1/admin/task-diagnostics') {
+        sendJson(response, 200, service.taskDiagnostics());
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/api/v1/attention') {
         sendJson(response, 200, service.snapshot);
         return;

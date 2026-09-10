@@ -17,6 +17,7 @@ async function withServer(callback) {
       diagnostics: {},
     },
     async refresh() { return this.snapshot; },
+    taskDiagnostics() { return { selection: null, tasks: [{ id: THREAD_ID, title: 'Task', status: 'running' }] }; },
     async desktopState() {
       return {
         version: 1,
@@ -69,6 +70,17 @@ test('health is public while attention data requires bearer token', async () => 
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).version, 1);
+  });
+});
+
+test('task diagnostics require local admin authentication', async () => {
+  await withServer(async base => {
+    assert.equal((await fetch(`${base}/api/v1/admin/task-diagnostics`)).status, 401);
+    const response = await fetch(`${base}/api/v1/admin/task-diagnostics`, {
+      headers: { Authorization: 'Bearer abcdefghijklmnopqrstuvwxyz123456' },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { selection: null, tasks: [{ id: THREAD_ID, title: 'Task', status: 'running' }] });
   });
 });
 

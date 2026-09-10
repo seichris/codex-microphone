@@ -32,10 +32,14 @@ final class TaskEventStateTests: XCTestCase {
         var state = TaskEventState(at: now)
         try state.apply(event(a, true), at: now)
         try state.apply(event(a, true, source: other), at: now)
+        XCTAssertEqual(state.candidateTasks.map(\.threadId), [a, a])
+        XCTAssertEqual(state.candidateTasks.map(\.clientId), [client, other])
         XCTAssertEqual(state.result(at: now.addingTimeInterval(1)).1, "events-ambiguous")
         try state.apply(event(a, false, source: other), at: now)
+        XCTAssertEqual(state.candidateTasks.count, 1)
         XCTAssertEqual(result(state).threadId, a)
         try state.apply(event(b, true), at: now)
+        XCTAssertEqual(state.candidateTasks.map(\.threadId), [a, b])
         XCTAssertNil(result(state).threadId)
     }
 

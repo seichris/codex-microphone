@@ -41,7 +41,7 @@ final class FocusedTaskSelectionTests: XCTestCase {
         diagnostic.webAreas = 1
         let data = try JSONEncoder().encode(diagnostic)
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(Set(payload.keys), Set(["reason", "appCount", "processID", "trusted", "axErrors", "visited", "webAreas", "candidates", "elapsedMilliseconds"]))
+        XCTAssertEqual(Set(payload.keys), Set(["reason", "appCount", "processID", "trusted", "axErrors", "visited", "webAreas", "candidates", "candidateTasks", "elapsedMilliseconds"]))
         XCTAssertFalse(diagnostic.message.contains("permission"))
         XCTAssertNotEqual(diagnostic.message, FocusedTaskDiagnostic(reason: "permission-needed").message)
     }

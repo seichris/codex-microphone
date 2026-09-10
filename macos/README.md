@@ -143,6 +143,22 @@ unloaded while this app owns port `5180`.
 The Wi-Fi microphone listener is owned by this app on port `5181`. It is
 optional: an unpaired or unavailable listener leaves USB behavior intact.
 
+### Task selection diagnostics
+
+Run `python3 scripts/diagnose-task-selection.py` from the repository root.
+The report separates App Server running/waiting states from the companion's
+selected target and stream-following candidates. It lists task IDs, titles
+when available, host IDs and originating client IDs. Multiple entries may
+refer to the same task. A stream candidate is not proof of keyboard focus.
+Unknown titles/statuses remain unknown; stale observer data is explicitly marked.
+Run states are the bridge App Server's observations, not a guaranteed global
+inventory of turns running in other Codex clients. An empty running list does
+not establish that the desktop has no running tasks.
+The local `focused-task.log` now includes candidate IDs (not task contents or
+credentials), retains owner-only permissions and rotates at 256 KiB. Task titles
+are resolved on demand through the authenticated loopback-only diagnostic API,
+not written to that log or exposed through the device API.
+
 ## Stable local signing
 
 For repeated local builds, choose an existing Apple Development signing identity
