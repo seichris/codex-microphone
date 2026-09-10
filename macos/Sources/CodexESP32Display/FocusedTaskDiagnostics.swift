@@ -1,6 +1,12 @@
 import Foundation
 
-/// Operational metadata only: no URLs, task IDs, window titles or UI text.
+/// Local diagnostics include task/client IDs, but never task contents or credentials.
+struct TaskCandidateDiagnostic: Equatable, Codable {
+    let threadId: String
+    let hostId: String
+    let clientId: String
+}
+
 struct FocusedTaskDiagnostic: Equatable, Codable {
     var reason: String
     var appCount = 0
@@ -11,6 +17,8 @@ struct FocusedTaskDiagnostic: Equatable, Codable {
     var visited = 0
     var webAreas = 0
     var candidates = 0
+    var uniqueCandidates = 0
+    var candidateTasks: [TaskCandidateDiagnostic] = []
     var elapsedMilliseconds = 0
 
     var message: String {

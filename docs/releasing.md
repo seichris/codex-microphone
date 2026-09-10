@@ -12,13 +12,17 @@ The release workflow builds two generic artifacts:
 - an ESP32-S3 firmware archive built from `firmware/sdkconfig.defaults`, with
   no Wi-Fi credentials, bridge token, pairing credential, or private key.
 
-The firmware archive is intentionally generic and is useful for hardware
-smoke-testing. The current firmware still compiles Wi-Fi and pairing values
-into the image, so a normal connected board must be built locally with those
-values before flashing. The Mac app creates its per-user bridge config on first
-launch. **Copy Bridge Token** in the menu exposes that token for provisioning
-without putting it in a release file. A future runtime-provisioning/OTA
-release can make the generic image directly installable without a local build.
+The firmware archive is intentionally generic. Attention Wi-Fi and bridge
+credentials are now provisioned at runtime over a physically confirmed USB CDC
+connection; they are not compiled into the image. Secure pairing storage still
+requires the separately owner/factory-provisioned HMAC key described in
+[attention pairing](attention-pairing.md), and physical qualification is a release
+gate. Independent wireless-microphone WSS provisioning remains unchanged.
+
+The Mac app creates its private per-user config on first launch. **Copy Local
+Admin Token** exposes that local dashboard credential, not a device credential.
+Use the companion's actual config path with the pairing CLI; see the pairing
+guide. Never copy a device secret or admin token into a release file.
 
 ## CI checks
 

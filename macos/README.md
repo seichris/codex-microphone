@@ -130,17 +130,37 @@ does not depend on access to the protected workspace. On first launch, the app
 creates a private bridge config at
 `~/Library/Application Support/Codex ESP32 Display/bridge-config.json` with
 mode 600 permissions. Existing local builds that embedded `bridge/config.json`
-are migrated once. The menu's **Copy Bridge Token** action makes the token
-available when provisioning a board; the token is never committed or bundled.
-Opening the dashboard from the menu automatically seeds its token through a
-URL fragment, then removes the fragment from the address bar after saving it in
-the dashboard's local storage.
+are migrated once. The menu's **Copy Local Admin Token** action makes the token
+available for the loopback dashboard only; it is never a device credential,
+committed, bundled, or copied into a URL. Paste it into the dashboard
+authentication field when needed. Use the physically confirmed
+[attention pairing flow](../docs/attention-pairing.md) with this same config
+path to provision a board.
 
 The previous `com.seichris.codex-esp32-display` LaunchAgent should remain
 unloaded while this app owns port `5180`.
 
 The Wi-Fi microphone listener is owned by this app on port `5181`. It is
 optional: an unpaired or unavailable listener leaves USB behavior intact.
+
+### Task selection diagnostics
+
+Run `python3 scripts/diagnose-task-selection.py` from the repository root.
+The report separates App Server running/waiting states from the companion's
+selected target and stream-following candidates. It lists task IDs, titles
+when available, host IDs and originating client IDs. Multiple entries may
+refer to the same task. A stream candidate is not proof of keyboard focus.
+Selection deduplicates by host and task ID; per-client entries are retained for
+disconnect handling. Different tasks or hosts remain ambiguous. The report
+shows both the number of client entries and the number of unique candidates.
+Unknown titles/statuses remain unknown; stale observer data is explicitly marked.
+Run states are the bridge App Server's observations, not a guaranteed global
+inventory of turns running in other Codex clients. An empty running list does
+not establish that the desktop has no running tasks.
+The local `focused-task.log` now includes candidate IDs (not task contents or
+credentials), retains owner-only permissions and rotates at 256 KiB. Task titles
+are resolved on demand through the authenticated loopback-only diagnostic API,
+not written to that log or exposed through the device API.
 
 ## Stable local signing
 

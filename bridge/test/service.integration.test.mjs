@@ -110,6 +110,11 @@ rl.on('line', line => {
     controllerState = { ...controllerState, threadId: null, focusConfidence: 'unavailable', voiceState: 'unknown' };
     await service.refresh();
     assert.equal(service.snapshot.currentThread, null);
+    const diagnostics = service.taskDiagnostics();
+    assert.equal(diagnostics.selection, null);
+    assert.equal(diagnostics.tasks.find(task => task.id === WAITING).status, 'waiting_approval');
+    assert.equal(diagnostics.tasks.find(task => task.id === UNREAD).title, 'Finished bridge');
+    assert.deepEqual(Object.keys(diagnostics.tasks[0]).sort(), ['id', 'status', 'title']);
     assert.equal(service.snapshot.desktopControlAvailable, true);
     assert.equal(service.snapshot.diagnostics.desktopStateAvailable, true);
     assert.equal((await service.desktopState()).focusConfidence, 'unavailable');

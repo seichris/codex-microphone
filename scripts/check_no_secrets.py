@@ -164,7 +164,8 @@ def tracked_paths(root: Path) -> list[str]:
 def scan_repository(root: Path) -> list[tuple[str, int, str]]:
     findings: list[tuple[str, int, str]] = []
     for relative_path in tracked_paths(root):
-        if relative_path in FORBIDDEN_PATHS or fnmatch.fnmatch(relative_path, "wireless-pairing*.json") or relative_path.endswith(".p12"):
+        if (relative_path in FORBIDDEN_PATHS or ".attention-pairing" in Path(relative_path).parts
+            or fnmatch.fnmatch(relative_path, "wireless-pairing*.json") or relative_path.endswith(".p12")):
             findings.append((relative_path, 1, "secret-bearing file must not be tracked"))
             continue
         path = root / relative_path

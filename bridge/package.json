@@ -10,7 +10,8 @@
   "scripts": {
     "setup": "node src/setup.mjs",
     "start": "node src/index.mjs",
-    "check": "node --check src/*.mjs test/*.mjs",
-    "test": "node --test"
+    "check": "for file in src/*.mjs test/*.mjs; do node --check \"$file\" || exit; done",
+    "test": "node --test",
+    "pair": "python3 ../scripts/pair-attention.py"
   }
 }

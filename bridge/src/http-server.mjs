@@ -1,5 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { createServer as createSecureServer } from 'node:https';
+import { authError, exactObject, validDeviceId } from './device-auth.mjs';
 import { DASHBOARD_HTML } from './dashboard.mjs';
 
 function tokenMatches(provided, expected) {
@@ -98,12 +100,35 @@ function latestThreadId(pathname) {
   }
 }
 
-export function createBridgeServer({ service, token, logger = console }) {
-  return createServer((request, response) => {
+export function createBridgeServer({ service, token, authority, device = false, tls, devicePort = 5182,
+  fallbackHost = '', logger = console }) {
+  if (device && (!authority || !tls)) throw new Error('Device listener requires paired TLS');
+  const handler = (request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://bridge.local');
+      if (!device) {
+        const remote = request.socket.remoteAddress;
+        const host = new URL(`http://${request.headers.host ?? ''}`).hostname;
+        if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)
+            || !['127.0.0.1', 'localhost', '[::1]'].includes(host)
+            || (request.headers.origin && request.headers.origin !== `http://${request.headers.host}`)) {
+          throw authError('local_admin_only', 403);
+        }
+      }
+      if (url.search) throw authError('query_parameters_not_supported', 400);
+      if (device && request.method === 'POST' && url.pathname.startsWith('/api/v1/device/')) {
+        const body = await readJsonBody(request);
+        const peer = request.socket.remoteAddress ?? 'unknown';
+        let result;
+        if (url.pathname === '/api/v1/device/challenge') result = authority.challenge(body, peer);
+        else if (url.pathname === '/api/v1/device/token') result = await authority.issue(body, peer);
+        else if (url.pathname === '/api/v1/device/revoke') result = await authority.revoke(body, peer);
+        else throw authError('not_found', 404);
+        sendJson(response, 200, result);
+        return;
+      }
 
-      if (request.method === 'GET' && url.pathname === '/') {
+      if (!device && request.method === 'GET' && url.pathname === '/') {
         response.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'no-store',
@@ -115,7 +140,7 @@ export function createBridgeServer({ service, token, logger = console }) {
       }
 
       if (request.method === 'GET' && url.pathname === '/healthz') {
-        sendJson(response, 200, {
+        sendJson(response, 200, device ? { ok: true, version: 1 } : {
           ok: true,
           appServerConnected: service.connected,
           generatedAt: service.snapshot.generatedAt,
@@ -123,9 +148,42 @@ export function createBridgeServer({ service, token, logger = console }) {
         return;
       }
 
-      if (!isAuthorized(request, token)) {
+      if (device) authority.authorize(request, url.pathname);
+      else if (!isAuthorized(request, token)) {
         response.setHeader('WWW-Authenticate', 'Bearer realm="Codex ESP32 Display"');
         sendJson(response, 401, { error: 'unauthorized' });
+        return;
+      }
+
+      if (!device && authority && url.pathname.startsWith('/api/v1/admin/devices')) {
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/devices') {
+          sendJson(response, 200, { version: 1, bridgeId: authority.store.bridgeId, devices: authority.store.list() });
+          return;
+        }
+        if (request.method !== 'POST') throw authError('not_found', 404);
+        const body = await readJsonBody(request);
+        if (url.pathname === '/api/v1/admin/devices/prepare'
+            && exactObject(body, ['deviceId', 'replaces'])) {
+          const record = await authority.store.prepare(body.deviceId, body.replaces);
+          sendJson(response, 200, { ...record, port: devicePort, fallbackHost, provisionedAt: Math.floor(Date.now() / 1000) });
+          return;
+        }
+        if (url.pathname === '/api/v1/admin/devices/revoke'
+            && exactObject(body, ['deviceId', 'nonce'])) {
+          sendJson(response, 200, await authority.store.resetAcknowledgement(body.deviceId, body.nonce));
+          return;
+        }
+        if (url.pathname === '/api/v1/admin/devices/activate'
+            && exactObject(body, ['deviceId']) && validDeviceId(body.deviceId)) {
+          await authority.store.activate(body.deviceId);
+          sendJson(response, 200, { ok: true });
+          return;
+        }
+        throw authError('invalid_request', 400);
+      }
+
+      if (!device && request.method === 'GET' && url.pathname === '/api/v1/admin/task-diagnostics') {
+        sendJson(response, 200, service.taskDiagnostics());
         return;
       }
 
@@ -183,16 +241,21 @@ export function createBridgeServer({ service, token, logger = console }) {
 
       sendJson(response, 404, { error: 'not_found' });
     })().catch((error) => {
-      if ((error?.statusCode ?? 500) >= 500) logger.error(error);
+      if ((error?.statusCode ?? 500) >= 500) logger.error('Bridge request failed');
       if (!response.headersSent) {
         sendJson(response, error?.statusCode ?? 500, {
           error: error?.code ?? 'internal_error',
-          ...(error?.message ? { message: error.message } : {}),
+          ...((error?.statusCode ?? 500) < 500 && error?.message ? { message: error.message } : {}),
         });
       }
       else response.destroy(error);
     });
-  });
+  };
+  const server = device ? createSecureServer(tls, handler) : createServer(handler);
+  server.requestTimeout = 10_000;
+  server.headersTimeout = 5_000;
+  server.keepAliveTimeout = 2_000;
+  return server;
 }
 
 export async function listen(server, { host, port }) {

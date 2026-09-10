@@ -2,7 +2,7 @@ import { accessSync, constants } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { normalizeAttentionFilter } from './attention.mjs';
 import { expandHome } from './util.mjs';
 
@@ -71,7 +71,11 @@ export async function loadConfig() {
 
   const config = {
     configPath,
-    host: process.env.CODEX_ATTENTION_HOST ?? fileConfig.host ?? '0.0.0.0',
+    host: '127.0.0.1', // Legacy LAN host is deliberately not reused for administration.
+    deviceHost: fileConfig.deviceHost ?? '0.0.0.0',
+    devicePort: integer(fileConfig.devicePort, 5182, 1, 65535),
+    pairingDirectory: resolve(dirname(configPath), '.attention-pairing'),
+    fallbackHost: fileConfig.fallbackHost ?? hostname(),
     port: integer(process.env.CODEX_ATTENTION_PORT ?? fileConfig.port, 5180, 1, 65535),
     token: process.env.CODEX_ATTENTION_TOKEN ?? fileConfig.token ?? '',
     pollIntervalMs: integer(
@@ -91,12 +95,19 @@ export async function loadConfig() {
     desktopControlToken: process.env.CODEX_DESKTOP_CONTROL_TOKEN ?? '',
   };
 
-  const loopback = new Set(['127.0.0.1', '::1', 'localhost']);
-  if (!config.token && !loopback.has(config.host)) {
-    throw new Error('A token is required when listening beyond localhost. Run "npm run setup".');
+  if (!config.token) {
+    throw new Error('A local administrative token is required. Run "npm run setup".');
   }
   if (config.token && config.token.length < 24) {
     throw new Error('Bridge token must be at least 24 characters.');
+  }
+  if (typeof config.fallbackHost !== 'string' || config.fallbackHost.length > 253
+      || (config.fallbackHost !== '' && !config.fallbackHost.split('.').every((label) =>
+        /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label)))) {
+    throw new Error('Invalid fallback hostname');
+  }
+  if (config.devicePort === config.port || config.devicePort === 5181) {
+    throw new Error('Attention TLS port must be separate from admin and wireless microphone ports');
   }
   return config;
 }

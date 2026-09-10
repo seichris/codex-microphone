@@ -2,7 +2,7 @@
 
 // Application error: keep an HTTP authentication failure distinct from an
 // ESP-IDF transport/client state error.
-#define ATTENTION_ERR_UNAUTHORIZED 0x20001
+#include "attention_connection.h"
 
 #include "attention_model.h"
 #include "esp_err.h"

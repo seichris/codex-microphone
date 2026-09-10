@@ -30,3 +30,6 @@ void attention_ui_show_detail_error(const char *thread_id, const char *message);
 bool attention_ui_is_detail_visible(void);
 bool attention_ui_is_settings_visible(void);
 bool attention_ui_is_detail_for(const char *thread_id);
+
+void attention_ui_show_pairing_prompt(const char *message, bool failed);
+void attention_ui_hide_pairing_prompt(void);

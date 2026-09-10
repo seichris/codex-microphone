@@ -4,6 +4,12 @@ idf_component_register(
         "attention_audio.c"
         "wifi_manager.c"
         "attention_client.c"
+        "attention_pairing.c"
+        "attention_pairing_record.c"
+        "attention_connection.c"
+        "attention_connection_status.c"
+        "attention_confirmation.c"
+        "attention_provisioning.c"
         "attention_ui.c"
         "attention_display.c"
         "display_frame.c"
@@ -17,6 +23,8 @@ idf_component_register(
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_timer
     REQUIRES
+        esp_driver_uart
+        esp_hw_support
         esp_driver_gpio
         esp_driver_i2c
         esp_event
@@ -30,7 +38,10 @@ idf_component_register(
         esp_websocket_client
         json
         nvs_flash
+        nvs_sec_provider
+        mdns
         usb_device_uac
+        espressif__tinyusb
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

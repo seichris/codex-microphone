@@ -34,3 +34,11 @@ macos/.signing-identity
 # Wireless pairing bundles contain TLS private keys and board credentials.
 wireless-pairing*.json
 *.p12
+
+# Attention pairing store contains TLS and per-device secrets.
+bridge/.attention-pairing/
+attention-pairing*.json
+
+# Python host tests
+__pycache__/
+*.py[cod]

@@ -69,7 +69,7 @@ final class StatusItemController: NSObject {
         menu.addItem(dashboardItem)
 
         let copyItem = NSMenuItem(
-            title: "Copy Device Endpoint",
+            title: "Copy Local API Endpoint",
             action: #selector(copyEndpoint),
             keyEquivalent: ""
         )
@@ -77,7 +77,7 @@ final class StatusItemController: NSObject {
         menu.addItem(copyItem)
 
         let copyTokenItem = NSMenuItem(
-            title: "Copy Bridge Token",
+            title: "Copy Local Admin Token",
             action: #selector(copyToken),
             keyEquivalent: ""
         )

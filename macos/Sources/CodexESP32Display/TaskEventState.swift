@@ -29,8 +29,8 @@ struct TaskEventFrames {
     }
 }
 
-/// Track exact host/task IDs per originating client. Multiple presented views
-/// are ambiguous, including two clients presenting the same task.
+/// Retain ownership per client, but resolve selection by unique host/task.
+/// Multiple clients following the same task are not competing task identities.
 struct TaskEventState {
     private struct Target: Hashable { let id: String; let host: String }
     private struct Event: Decodable {
@@ -80,10 +80,20 @@ struct TaskEventState {
     }
 
     var candidateCount: Int { clients.values.reduce(0) { $0 + $1.count } }
+    private var uniqueTargets: Set<Target> { Set(clients.values.flatMap { $0 }) }
+    var uniqueCandidateCount: Int { uniqueTargets.count }
+    var candidateTasks: [TaskCandidateDiagnostic] {
+        clients.flatMap { client, targets in
+            targets.map { TaskCandidateDiagnostic(threadId: $0.id, hostId: $0.host, clientId: client) }
+        }.sorted {
+            ($0.hostId, $0.threadId, $0.clientId) < ($1.hostId, $1.threadId, $1.clientId)
+        }
+    }
     func result(at now: Date = Date()) -> (FocusedTaskSelection, String) {
         guard now >= settleUntil else { return (.unavailable(at: now), "events-settling") }
-        guard candidateCount <= 1 else { return (.unavailable(at: now), "events-ambiguous") }
-        guard let target = clients.values.first?.first else {
+        let targets = uniqueTargets
+        guard targets.count <= 1 else { return (.unavailable(at: now), "events-ambiguous") }
+        guard let target = targets.first else {
             return (FocusedTaskSelection(status: .noTask, observedAt: now), "noTask")
         }
         guard target.host == "local" else {
