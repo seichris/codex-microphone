@@ -302,3 +302,9 @@ GitHub Actions runs the bridge suite and an ESP-IDF 5.4.4 firmware build.
 ## License
 
 MIT. See [NOTICE](NOTICE) for trademark and affiliation information.
+
+## Optional FluidVoice engine
+
+The companion can use FluidVoice's local API with existing USB or paired Wi-Fi
+capture. Apple Speech remains the default. See [setup, limits and verification](fluidvoice.md)
+and the [implementation plan reconciled with newer PRs](fluidvoice-implementation-plan.md).

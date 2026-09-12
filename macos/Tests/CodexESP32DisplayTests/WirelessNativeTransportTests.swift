@@ -331,6 +331,54 @@ final class WirelessNativeTransportTests: XCTestCase {
         try await expect(.listening, from: peer)
     }
 
+    private actor FluidVoiceFixture: FluidVoiceTranscribing {
+        var recordings: [Data] = []
+        func transcribe(pcm: Data, port: Int) async throws -> String {
+            recordings.append(pcm)
+            return "Paired wireless recording"
+        }
+    }
+
+    func testRealPairedWiFiDrainsIntoFluidVoiceRecorder() async throws {
+        let fixture = try IdentityFixture()
+        let server = WirelessMicrophoneServer(configuration: .init(port: 0,
+            pairingProvider: { fixture.pairing }, identityProvider: { fixture.identity }))
+        let transcriber = FluidVoiceFixture()
+        let recorder = DictationRecorder(fluidVoice: transcriber)
+        let final = expectation(description: "wireless FluidVoice result")
+        final.assertForOverFulfill = true
+        server.onStart = { _, sessionID in
+            do {
+                try await recorder.start(id: UUID(), transport: .wifi, wirelessSessionID: sessionID, engine: .fluidVoice) { event in
+                    if case let .transcript(text, isFinal) = event {
+                        XCTAssertEqual(text, "Paired wireless recording")
+                        XCTAssertTrue(isFinal)
+                        final.fulfill()
+                    }
+                    if case let .failed(message) = event { XCTFail(message) }
+                }
+                return true
+            } catch { return false }
+        }
+        server.onAudioFrame = { recorder.appendWirelessFrame($0) }
+        server.onStop = { _, sessionID, _ in await recorder.finishWireless(sessionID: sessionID) }
+        server.onSessionFailure = { _, sessionID, reason in recorder.cancel(message: reason, sessionID: sessionID) }
+        let port = try await startServer(server)
+        let peer = Peer(port: port, fixture: fixture)
+        defer { peer.cancel(); server.stop() }
+        try await authenticate(peer, fixture: fixture)
+        let prepared = try await arm(peer, requestID: "fluidvoice-wifi")
+        let id = try XCTUnwrap(prepared.sessionID.flatMap(UUID.init(uuidString:)))
+        let pcm = Data(repeating: 0x10, count: Wire.pcmBytesPerFrame)
+        peer.send(try Wire.encodeAudioFrame(sessionID: id, sequence: 0, firstSample: 0, pcm: pcm), opcode: .binary)
+        try await expect(.listening, from: peer)
+        try peer.send(.init(.stop, sessionID: prepared.sessionID, generation: prepared.generation, finalSequence: 1))
+        try await expect(.stopped, from: peer)
+        await fulfillment(of: [final], timeout: 3)
+        let recordings = await transcriber.recordings
+        XCTAssertEqual(recordings, [pcm])
+    }
+
     func testRealTLSNameVerificationSinkRejectionAndReconnect() async throws {
         let fixture = try IdentityFixture()
         let server = WirelessMicrophoneServer(configuration: .init(port: 0,

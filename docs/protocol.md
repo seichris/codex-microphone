@@ -222,3 +222,11 @@ missing frame.
 Firmware rejects responses whose `version` is not `1`. Additive fields are
 allowed within v1. Removing or changing a field's meaning/type requires a new
 protocol version.
+
+## FluidVoice engine compatibility
+
+FluidVoice is a companion-side transcription choice; it adds no device wire
+messages or credentials. Existing USB/paired WSS capture and Stop/drain semantics
+remain unchanged. `stopped` still acknowledges admitted audio drain, not completed
+transcription. The companion then performs a bounded local HTTP request and
+reviews the result for the original task. See [FluidVoice](fluidvoice.md).
