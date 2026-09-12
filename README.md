@@ -15,7 +15,8 @@ continue to use the same local project.
 - **Upper button — short press:** move to the next thread.
 - **Lower button — short press:** open the selected thread; press again to return.
 - **Either button — hold for one second:** focus the selected thread and start
-  dictation; hold again to stop. The Mac companion opens the draft in that task.
+  dictation; hold again to stop. The Mac companion opens the draft in that task
+  (FluidVoice results first open for review).
 - **Touch:** scroll, open cards, select Voice Target, and adjust display settings.
 - **Lower button — longer hardware hold:** power off the board.
 
@@ -43,7 +44,9 @@ continue to use the same local project.
 - **Enable paired Wi-Fi dictation (optional):** create and provision a pairing
   bundle with the scripts described in [macOS pairing instructions](macos/README.md#pairing-the-wi-fi-microphone).
 - **Run the Mac companion (optional):** use `./macos/build_app.sh`, open the
-  generated app, and grant Speech Recognition permission (plus Microphone for USB mode).
+  generated app, and grant Speech Recognition permission for Apple Speech (plus
+  Microphone for USB mode). Alternatively, select the [FluidVoice engine](docs/fluidvoice.md)
+  to transcribe using its local API.
 
 Detailed implementation, architecture, API, security, and validation notes are in
 [Current software](docs/current-software.md). The [device protocol](docs/protocol.md)

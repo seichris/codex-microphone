@@ -108,6 +108,9 @@ final class DesktopVoiceController: ObservableObject {
             // Pairing is optional during USB-only operation. A missing
             // identity is surfaced as a setup state, not a launch failure.
             try? wirelessServer.start()
+            if dictation.engine == .fluidVoice {
+                Task { [weak dictation] in await dictation?.refreshFluidVoice() }
+            }
             timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.drainRequests() }
             }

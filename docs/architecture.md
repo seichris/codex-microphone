@@ -144,3 +144,13 @@ behavior still requires verification on the exact board.
 - Wireless ingress overflow, skipped frame, stale acknowledgement, or stop
   timeout: capture closes immediately and the partial transcript remains a
   review-only draft.
+
+## FluidVoice transcription backend
+
+The native recorder can select Apple Speech or FluidVoice independently of the
+USB/WSS transport. FluidVoice retains a bounded complete recording in RAM, then
+POSTs WAV to its loopback API. Existing paired WSS, capture ownership, immutable
+task/session IDs and drain acknowledgement are reused. No Node audio endpoint
+is added. FluidVoice results require review before an explicit task draft action;
+Apple Speech retains automatic handoff. See [contract and data handling](fluidvoice.md)
+and the [plan reconciliation](fluidvoice-implementation-plan.md).

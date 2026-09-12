@@ -18,8 +18,9 @@ Desktop Voice status, Voice Settings, and quit.
 
 ## Device dictation
 
-Open **Voice Settings… → Enable Dictation Permissions**. Speech Recognition and
-on-device English recognition are required for both transports. USB mode also
+Apple Speech is the default engine. Open **Voice Settings… → Enable Dictation
+Permissions**. Speech Recognition and on-device English recognition are required
+for Apple Speech on both transports. USB mode also
 requires Microphone permission and the exact Waveshare USB device; Wi-Fi mode
 does not depend on `AVCaptureDevice` enumeration or Mac Microphone permission.
 Accessibility is not used for recording or draft handoff. The companion never
@@ -29,6 +30,14 @@ The **Microphone transport** picker supports `Auto`, `USB`, and `Wi-Fi`. Auto
 chooses USB when it is ready and otherwise uses the paired Wi-Fi listener; the
 choice is locked for the duration of a recording. USB insertion/removal cannot
 reroute an active session.
+
+### FluidVoice engine
+
+Choose **Voice Settings → Transcription engine → FluidVoice (local API)** to
+reuse FluidVoice's model with USB or the paired Wi-Fi input. Wi-Fi FluidVoice
+needs no Apple Speech or Mac Microphone permission. Completed FluidVoice text
+opens for review with explicit **Open as Task Draft** and **Discard** actions;
+Apple Speech keeps automatic draft handoff. See [FluidVoice setup and limits](../docs/fluidvoice.md).
 
 ### Pairing the Wi-Fi microphone
 
@@ -67,8 +76,9 @@ pairing is required after changing the Mac identity, host, or credential.
    first correctly framed PCM block to arrive. A posted control acknowledgement
    alone never opens the recorder.
 3. Speak, then hold again. This closes the device PCM gate and calls
-   `endAudio()` on the local speech request so transcription can finish.
-4. Completed dictation automatically opens in the recorded task's composer,
+   `endAudio()` on the Apple Speech request, or submits the complete WAV to
+   FluidVoice after the admitted Wi-Fi frames have drained.
+4. Completed Apple Speech dictation automatically opens in the recorded task's composer,
    using its task ID and a percent-encoded `prompt` query in a Codex deep link.
    This replaces any existing composer text; it never sends a message.
    After Codex accepts the handoff, the companion clears its local copy so the

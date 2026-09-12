@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import Speech
 
-/// All capture and recognition state is confined to queue. No audio is saved.
+/// Capture/recognition state is confined to queue. FluidVoice audio is bounded in RAM.
 final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     static let deviceID = "AppleUSBAudioEngine:Codex ESP32 Display:Waveshare Voice Microphone:CESP32VOICE01:1"
     enum Event: Sendable {
@@ -18,7 +18,14 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
     private var audioEnded = false
     private static var monotonicNow: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
-    override init() {
+    private let fluidVoice: any FluidVoiceTranscribing
+    private var engine: DictationEngine = .appleSpeech
+    private var fluidVoicePort = 47733
+    private var fluidAudio = FluidVoiceAudio()
+    private var fluidTask: Task<Void, Never>?
+
+    init(fluidVoice: any FluidVoiceTranscribing = FluidVoiceClient.shared) {
+        self.fluidVoice = fluidVoice
         wirelessIngress = WirelessAudioIngress(queue: queue)
         super.init()
     }
@@ -63,6 +70,8 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         id: UUID,
         transport: DictationTransport,
         wirelessSessionID: UUID? = nil,
+        engine: DictationEngine = .appleSpeech,
+        fluidVoicePort: Int = 47733,
         event: @escaping @Sendable (Event) -> Void
     ) async throws {
         try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
@@ -78,6 +87,9 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                 self.finishing = false
                 self.audioEnded = false
                 self.transport = transport
+                self.engine = engine
+                self.fluidVoicePort = fluidVoicePort
+                self.fluidAudio.reset()
                 self.wirelessSessionID = wirelessSessionID
                 self.wirelessFormat = nil
                 self.wirelessDidEmitRecording = false
@@ -85,37 +97,39 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                 self.peak = 0
                 self.transcriptAccumulator.reset()
                 do {
-                    guard Self.speechPermissionReady else { throw DictationError.message("Allow Speech Recognition in Voice Settings.") }
-                    guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")), recognizer.supportsOnDeviceRecognition else {
-                        throw DictationError.message("On-device English speech recognition is unavailable on this Mac.")
-                    }
-                    let request = SFSpeechAudioBufferRecognitionRequest()
-                    request.requiresOnDeviceRecognition = true
-                    request.shouldReportPartialResults = true
-                    request.taskHint = .dictation
-                    self.request = request
-                    self.recognizer = recognizer
-                    self.task = recognizer.recognitionTask(with: request) { result, error in
-                        self.queue.async {
-                            guard self.generation == id else { return }
-                            if let result {
-                                let segments = result.bestTranscription.segments
-                                let start = segments.first?.timestamp
-                                let end = segments.last.map { $0.timestamp + $0.duration }
-                                let audioRange: Range<TimeInterval>?
-                                if let start, let end, start.isFinite, end.isFinite, start >= 0, end > start {
-                                    audioRange = start..<end
-                                } else {
-                                    audioRange = nil
+                    if engine == .appleSpeech {
+                        guard Self.speechPermissionReady else { throw DictationError.message("Allow Speech Recognition in Voice Settings.") }
+                        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")), recognizer.supportsOnDeviceRecognition else {
+                            throw DictationError.message("On-device English speech recognition is unavailable on this Mac.")
+                        }
+                        let request = SFSpeechAudioBufferRecognitionRequest()
+                        request.requiresOnDeviceRecognition = true
+                        request.shouldReportPartialResults = true
+                        request.taskHint = .dictation
+                        self.request = request
+                        self.recognizer = recognizer
+                        self.task = recognizer.recognitionTask(with: request) { result, error in
+                            self.queue.async {
+                                guard self.generation == id else { return }
+                                if let result {
+                                    let segments = result.bestTranscription.segments
+                                    let start = segments.first?.timestamp
+                                    let end = segments.last.map { $0.timestamp + $0.duration }
+                                    let audioRange: Range<TimeInterval>?
+                                    if let start, let end, start.isFinite, end.isFinite, start >= 0, end > start {
+                                        audioRange = start..<end
+                                    } else {
+                                        audioRange = nil
+                                    }
+                                    let transcript = self.transcriptAccumulator.update(
+                                        result.bestTranscription.formattedString,
+                                        audioRange: audioRange
+                                    )
+                                    self.event?(.transcript(transcript, final: result.isFinal))
+                                    if result.isFinal { self.cleanup(); return }
                                 }
-                                let transcript = self.transcriptAccumulator.update(
-                                    result.bestTranscription.formattedString,
-                                    audioRange: audioRange
-                                )
-                                self.event?(.transcript(transcript, final: result.isFinal))
-                                if result.isFinal { self.cleanup(); return }
+                                if let error { self.fail("Speech recognition failed: \(error.localizedDescription)") }
                             }
-                            if let error { self.fail("Speech recognition failed: \(error.localizedDescription)") }
                         }
                     }
                     if transport == .usb {
@@ -126,7 +140,8 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                         let input = try AVCaptureDeviceInput(device: device)
                         let output = AVCaptureAudioDataOutput()
                         output.audioSettings = [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 16,
-                            AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVNumberOfChannelsKey: 1]
+                            AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false, AVNumberOfChannelsKey: 1,
+                            AVSampleRateKey: 48000]
                         guard capture.canAddInput(input), capture.canAddOutput(output) else {
                             capture.commitConfiguration()
                             throw DictationError.message("Could not configure the Waveshare microphone.")
@@ -178,6 +193,13 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         queue.async { if self.generation == id { self.finishOnQueue() } }
     }
 
+    func cancel(id: UUID) {
+        queue.async {
+            guard self.generation == id else { return }
+            self.fail("Recording cancelled.")
+        }
+    }
+
     func cancel(message: String, sessionID: UUID) {
         wirelessIngress.close(sessionID: sessionID)
         queue.async {
@@ -226,6 +248,31 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         DictationDiagnostics.record("finish", samples: samples, peak: peak)
         event?(.finishing)
         session?.stopRunning()
+        if engine == .fluidVoice {
+            guard let id = generation else { return }
+            let pcm = fluidAudio.pcm
+            fluidAudio.reset()
+            guard !pcm.isEmpty, peak >= 0.0001 else {
+                fail("The microphone delivered silence. Check the input level and try again.")
+                return
+            }
+            let port = fluidVoicePort
+            fluidTask = Task { [weak self, fluidVoice] in
+                let result: Result<String, Error>
+                do { result = .success(try await fluidVoice.transcribe(pcm: pcm, port: port)) }
+                catch { result = .failure(error) }
+                self?.queue.async { [weak self] in
+                    guard let self, self.generation == id else { return }
+                    switch result {
+                    case let .success(text):
+                        self.event?(.transcript(text, final: true))
+                        self.cleanup()
+                    case let .failure(error): self.fail(error.localizedDescription)
+                    }
+                }
+            }
+            return
+        }
         endAudioOnce()
         let id = generation
         queue.asyncAfter(deadline: .now() + 10) {
@@ -250,6 +297,18 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
             var data = Data(count: length)
             let status = data.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
             if status == kCMBlockBufferNoErr {
+                if engine == .fluidVoice {
+                    guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+                          let format = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
+                          format.mSampleRate == 48000, format.mChannelsPerFrame == 1,
+                          format.mBitsPerChannel == 16, format.mFormatID == kAudioFormatLinearPCM,
+                          format.mFormatFlags & (kAudioFormatFlagIsFloat | kAudioFormatFlagIsBigEndian) == 0,
+                          format.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0 else {
+                        fail(FluidVoiceError.invalidAudio.localizedDescription); return
+                    }
+                    do { try fluidAudio.append(data) }
+                    catch { fail(error.localizedDescription); return }
+                }
                 let level = data.withUnsafeBytes { bytes -> Float in
                     var result: Float = 0
                     for offset in stride(from: 0, to: max(0, bytes.count - 1), by: 2) {
@@ -260,7 +319,11 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
                 }
                 peak = max(peak, level)
                 if Self.monotonicNow - lastLevel > 0.15 { lastLevel = Self.monotonicNow; event?(.level(level)) }
+            } else if engine == .fluidVoice {
+                fail(FluidVoiceError.invalidAudio.localizedDescription); return
             }
+        } else if engine == .fluidVoice {
+            fail(FluidVoiceError.invalidAudio.localizedDescription); return
         }
         request?.appendAudioSampleBuffer(sampleBuffer)
         if let completion = startCompletion {
@@ -298,8 +361,11 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         }
         peak = max(peak, level)
         if Self.monotonicNow - lastLevel > 0.15 { lastLevel = Self.monotonicNow; event?(.level(level)) }
-        request?.append(buffer)
-        if !wirelessDidEmitRecording { DictationDiagnostics.record("wifi-first-speech-append", samples: samples) }
+        if engine == .fluidVoice {
+            do { try fluidAudio.append(frame.pcm) }
+            catch { fail(error.localizedDescription); return }
+        } else { request?.append(buffer) }
+        if !wirelessDidEmitRecording { DictationDiagnostics.record((engine == .fluidVoice ? "wifi-first-fluidvoice-buffer" : "wifi-first-speech-append"), samples: samples) }
         if startCompletion != nil {
             startCompletion = nil
             DictationDiagnostics.record("recording", samples: samples, peak: peak)
@@ -330,6 +396,9 @@ final class DictationRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDel
     private func cleanup() {
         if let wirelessSessionID { wirelessIngress.close(sessionID: wirelessSessionID) }
         generation = nil
+        fluidTask?.cancel()
+        fluidTask = nil
+        fluidAudio.reset()
         transcriptAccumulator.reset()
         session?.stopRunning()
         session = nil
